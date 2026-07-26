@@ -4,7 +4,7 @@
 # Get these from your Supabase project settings
 SUPABASE_URL=https://bfxviifbzulbxdfybtro.supabase.co
 SUPABASE_KEY=sb_publishable_BnK0cEUbhJPzn-2EZ4PeIA_VZCbOYU6
-SUPABASE_PASSWORD=your_postgres_password_here
+SUPABASE_PASSWORD=Bipin@842293
 
 # Example:
 # SUPABASE_URL=https://xxxxxx.supabase.co
