@@ -12,8 +12,8 @@ load_dotenv()
 # Initialize Supabase credentials
 # On Streamlit Cloud: set these in Settings -> Secrets
 # Locally: set these in a .env file (make sure .env is in .gitignore!)
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.getenv("SUPABASE_URL"))
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.getenv("SUPABASE_KEY"))
+SUPABASE_URL = https://bfxviifbzulbxdfybtro.supabase.co
+SUPABASE_KEY = 
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase credentials not found! Please set SUPABASE_URL and SUPABASE_KEY in Streamlit Secrets (or a local .env file)")
