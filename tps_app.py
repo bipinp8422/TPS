@@ -168,16 +168,13 @@ def employee_dashboard():
         emp_data = emp_result.data[0]
 
         # ---- Profile card (mirrors the master fields in the Excel sheet) ----
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Employee ID", emp_data.get("emp_id", "-"))
         with col2:
             st.metric("Region", emp_data.get("region") or "-")
         with col3:
             st.metric("Category", emp_data.get("sales_force_category") or "-")
-        with col4:
-            tps = emp_data.get("tps_score")
-            st.metric("TPS Score", f"{tps}%" if tps is not None else "N/A")
 
         col1, col2, col3 = st.columns(3)
         with col1:
