@@ -648,6 +648,14 @@ def admin_dashboard():
             st.caption(f"{len(filtered)} counter(s)")
             st.dataframe(filtered, use_container_width=True, hide_index=True)
 
+            filtered_excel_bytes = to_excel_bytes({"Filtered Counters": filtered})
+            st.download_button(
+                "⬇️ Download this view (Excel)",
+                filtered_excel_bytes,
+                file_name=f"TPS_Counters_Filtered_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
     except Exception as e:
         st.error(f"Error loading Admin dashboard: {str(e)}")
 
