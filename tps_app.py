@@ -6,15 +6,17 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Load environment variables
+# Load environment variables (used for local development only)
 load_dotenv()
 
-# Initialize Supabase
-SUPABASE_URL = https://bfxviifbzulbxdfybtro.supabase.co
-SUPABASE_KEY = sb_secret_76-H7oVmKcD0vNlDlZjBWw_MPn5Hn79
+# Initialize Supabase credentials
+# On Streamlit Cloud: set these in Settings -> Secrets
+# Locally: set these in a .env file (make sure .env is in .gitignore!)
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.getenv("SUPABASE_URL"))
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.getenv("SUPABASE_KEY"))
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("❌ Supabase credentials not found! Please set SUPABASE_URL and SUPABASE_KEY in .env file")
+    st.error("❌ Supabase credentials not found! Please set SUPABASE_URL and SUPABASE_KEY in Streamlit Secrets (or a local .env file)")
     st.stop()
 
 try:
@@ -51,7 +53,7 @@ def add_sample_data():
     try:
         # Check if data already exists
         result = supabase.table("employees").select("COUNT(*)", count="exact").execute()
-        
+
         if result.data and len(result.data) > 0:
             if result.count == 0:
                 # Add sample employees
@@ -94,7 +96,7 @@ def add_sample_data():
                     }
                 ]
                 supabase.table("employees").insert(employees).execute()
-                
+
                 # Add sample partners
                 partners = [
                     {
@@ -131,7 +133,7 @@ def add_sample_data():
                     }
                 ]
                 supabase.table("partners").insert(partners).execute()
-                
+
                 # Add sample TL users
                 tl_users = [
                     {
@@ -156,17 +158,17 @@ def add_sample_data():
 # Login function
 def login():
     st.title("🔐 TPS Management System - Login")
-    
+
     col1, col2 = st.columns([1, 1])
-    
+
     with col1:
         st.subheader("Employee Login")
         emp_id = st.text_input("Employee ID", key="emp_id")
-        
+
         if st.button("Login as Employee", key="emp_login_btn", use_container_width=True):
             try:
                 result = supabase.table("employees").select("emp_name").eq("emp_id", emp_id).execute()
-                
+
                 if result.data and len(result.data) > 0:
                     st.session_state.logged_in = True
                     st.session_state.user_type = 'employee'
@@ -178,16 +180,16 @@ def login():
                     st.error("Invalid Employee ID")
             except Exception as e:
                 st.error(f"Login error: {str(e)}")
-    
+
     with col2:
         st.subheader("Team Lead Login")
         tl_id = st.text_input("TL ID", key="tl_id")
         tl_password = st.text_input("Password", type="password", key="tl_password")
-        
+
         if st.button("Login as TL", key="tl_login_btn", use_container_width=True):
             try:
                 result = supabase.table("tl_users").select("tl_name").eq("tl_id", tl_id).eq("tl_password", tl_password).execute()
-                
+
                 if result.data and len(result.data) > 0:
                     st.session_state.logged_in = True
                     st.session_state.user_type = 'tl'
@@ -199,23 +201,23 @@ def login():
                     st.error("Invalid TL ID or Password")
             except Exception as e:
                 st.error(f"Login error: {str(e)}")
-    
+
     st.info("📌 Demo Credentials:\n\n**Employee:** EMP001, EMP002, EMP003, EMP004\n\n**TL:** ID: TL001, Password: tl@123")
 
 # Employee Dashboard
 def employee_dashboard():
     st.title(f"👤 Welcome, {st.session_state.user_name}!")
-    
+
     try:
         # Fetch employee data
         emp_result = supabase.table("employees").select("*").eq("emp_id", st.session_state.user_id).execute()
-        
+
         if emp_result.data and len(emp_result.data) > 0:
             emp_data = emp_result.data[0]
-            
+
             # Display employee info
             col1, col2, col3, col4 = st.columns(4)
-            
+
             with col1:
                 st.metric("TPS Score", f"{emp_data['tps_score']}%", delta="Performance")
             with col2:
@@ -224,31 +226,31 @@ def employee_dashboard():
                 st.metric("GST Number", emp_data['gst_number'])
             with col4:
                 st.metric("Department", emp_data['department'])
-            
+
             st.divider()
-            
+
             # Partner details
             st.subheader("📋 Current Partner Details")
             partners_result = supabase.table("partners").select("*").eq("emp_id", st.session_state.user_id).execute()
-            
+
             if partners_result.data and len(partners_result.data) > 0:
                 partner_df = pd.DataFrame(partners_result.data)
                 st.dataframe(partner_df[['partner_name', 'gst_number', 'status', 'created_date']], use_container_width=True, hide_index=True)
-            
+
             st.divider()
-            
+
             # Request new partner
             st.subheader("➕ Request New Counter/Partner")
             with st.form("new_partner_request"):
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
                     new_partner_name = st.text_input("New Partner Name")
                     new_gst = st.text_input("New GST Number")
-                
+
                 with col2:
                     reason = st.text_area("Reason for New Counter", height=80)
-                
+
                 if st.form_submit_button("Submit Request", use_container_width=True):
                     if new_partner_name and new_gst and reason:
                         try:
@@ -267,56 +269,56 @@ def employee_dashboard():
                             st.error(f"Error submitting request: {str(e)}")
                     else:
                         st.error("Please fill all fields")
-            
+
             st.divider()
-            
+
             # View request history
             st.subheader("📜 Your Request History")
             requests_result = supabase.table("partner_requests").select("*").eq("emp_id", st.session_state.user_id).order("requested_date", desc=True).execute()
-            
+
             if requests_result.data and len(requests_result.data) > 0:
                 request_df = pd.DataFrame(requests_result.data)
                 st.dataframe(request_df[['request_id', 'new_partner_name', 'new_gst_number', 'requested_date', 'status', 'tl_comments']], use_container_width=True, hide_index=True)
             else:
                 st.info("No requests yet")
-    
+
     except Exception as e:
         st.error(f"Error loading dashboard: {str(e)}")
 
 # TL Dashboard
 def tl_dashboard():
     st.title(f"👨‍💼 TL Dashboard - {st.session_state.user_name}")
-    
+
     try:
         tab1, tab2, tab3 = st.tabs(["📥 Pending Requests", "✅ Approved Requests", "❌ Rejected Requests"])
-        
+
         # Tab 1: Pending Requests
         with tab1:
             st.subheader("Pending Partner Requests")
             pending_result = supabase.table("partner_requests").select("*").eq("status", "Pending").order("requested_date").execute()
-            
+
             if pending_result.data and len(pending_result.data) > 0:
                 for req in pending_result.data:
                     with st.container(border=True):
                         col1, col2, col3 = st.columns([2, 2, 1])
-                        
+
                         with col1:
                             st.write(f"**Employee:** {req['emp_name']} ({req['emp_id']})")
                             st.write(f"**New Partner:** {req['new_partner_name']}")
                             st.write(f"**GST Number:** {req['new_gst_number']}")
-                        
+
                         with col2:
                             st.write(f"**Reason:** {req['reason']}")
                             st.write(f"**Requested:** {req['requested_date']}")
-                        
+
                         st.divider()
-                        
+
                         # Review section
                         col1, col2 = st.columns(2)
-                        
+
                         with col1:
                             tl_comment = st.text_area("Add Comments", key=f"comment_{req['request_id']}", height=80)
-                        
+
                         with col2:
                             if st.button("✅ Approve", key=f"approve_{req['request_id']}"):
                                 try:
@@ -327,7 +329,7 @@ def tl_dashboard():
                                         'reviewed_by': st.session_state.user_id,
                                         'reviewed_date': datetime.now().isoformat()
                                     }).eq("request_id", req['request_id']).execute()
-                                    
+
                                     # Add new partner
                                     partner_data = {
                                         'partner_id': f"P{datetime.now().strftime('%Y%m%d%H%M%S')}",
@@ -338,12 +340,12 @@ def tl_dashboard():
                                         'created_date': datetime.now().isoformat()
                                     }
                                     supabase.table("partners").insert(partner_data).execute()
-                                    
+
                                     st.success("✅ Request Approved!")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {str(e)}")
-                            
+
                             if st.button("❌ Reject", key=f"reject_{req['request_id']}"):
                                 try:
                                     supabase.table("partner_requests").update({
@@ -352,36 +354,36 @@ def tl_dashboard():
                                         'reviewed_by': st.session_state.user_id,
                                         'reviewed_date': datetime.now().isoformat()
                                     }).eq("request_id", req['request_id']).execute()
-                                    
+
                                     st.error("❌ Request Rejected!")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {str(e)}")
             else:
                 st.info("✅ All requests are processed!")
-        
+
         # Tab 2: Approved Requests
         with tab2:
             st.subheader("Approved Partner Requests")
             approved_result = supabase.table("partner_requests").select("*").eq("status", "Approved").order("reviewed_date", desc=True).execute()
-            
+
             if approved_result.data and len(approved_result.data) > 0:
                 approved_df = pd.DataFrame(approved_result.data)
                 st.dataframe(approved_df[['emp_name', 'new_partner_name', 'new_gst_number', 'requested_date', 'reviewed_date']], use_container_width=True, hide_index=True)
             else:
                 st.info("No approved requests")
-        
+
         # Tab 3: Rejected Requests
         with tab3:
             st.subheader("Rejected Partner Requests")
             rejected_result = supabase.table("partner_requests").select("*").eq("status", "Rejected").order("reviewed_date", desc=True).execute()
-            
+
             if rejected_result.data and len(rejected_result.data) > 0:
                 rejected_df = pd.DataFrame(rejected_result.data)
                 st.dataframe(rejected_df[['emp_name', 'new_partner_name', 'new_gst_number', 'requested_date', 'reviewed_date']], use_container_width=True, hide_index=True)
             else:
                 st.info("No rejected requests")
-    
+
     except Exception as e:
         st.error(f"Error loading TL dashboard: {str(e)}")
 
@@ -389,7 +391,7 @@ def tl_dashboard():
 def main():
     init_database()
     add_sample_data()
-    
+
     if not st.session_state.logged_in:
         login()
     else:
@@ -400,7 +402,7 @@ def main():
                 st.session_state.logged_in = False
                 st.session_state.user_type = None
                 st.rerun()
-        
+
         # Route to appropriate dashboard
         if st.session_state.user_type == 'employee':
             employee_dashboard()
