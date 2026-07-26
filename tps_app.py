@@ -11,7 +11,7 @@ load_dotenv()
 
 # Initialize Supabase
 SUPABASE_URL = https://bfxviifbzulbxdfybtro.supabase.co
-SUPABASE_KEY = sb_publishable_BnK0cEUbhJPzn-2EZ4PeIA_VZCbOYU6
+SUPABASE_KEY = sb_secret_76-H7oVmKcD0vNlDlZjBWw_MPn5Hn79
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase credentials not found! Please set SUPABASE_URL and SUPABASE_KEY in .env file")
