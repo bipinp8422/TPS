@@ -1,0 +1,12 @@
+# Supabase Configuration File
+# Copy this as .env or set these as environment variables
+
+# Get these from your Supabase project settings
+SUPABASE_URL=your_supabase_url_here
+SUPABASE_KEY=your_supabase_key_here
+SUPABASE_PASSWORD=your_postgres_password_here
+
+# Example:
+# SUPABASE_URL=https://xxxxxx.supabase.co
+# SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+# SUPABASE_PASSWORD=your_database_password
