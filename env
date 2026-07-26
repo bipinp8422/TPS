@@ -2,8 +2,8 @@
 # Copy this as .env or set these as environment variables
 
 # Get these from your Supabase project settings
-SUPABASE_URL=your_supabase_url_here
-SUPABASE_KEY=your_supabase_key_here
+SUPABASE_URL=https://bfxviifbzulbxdfybtro.supabase.co
+SUPABASE_KEY=sb_publishable_BnK0cEUbhJPzn-2EZ4PeIA_VZCbOYU6
 SUPABASE_PASSWORD=your_postgres_password_here
 
 # Example:
