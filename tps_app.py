@@ -10,8 +10,8 @@ from supabase import create_client, Client
 load_dotenv()
 
 # Initialize Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = https://bfxviifbzulbxdfybtro.supabase.co
+SUPABASE_KEY = sb_publishable_BnK0cEUbhJPzn-2EZ4PeIA_VZCbOYU6
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase credentials not found! Please set SUPABASE_URL and SUPABASE_KEY in .env file")
