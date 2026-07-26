@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from io import BytesIO
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -100,6 +101,16 @@ def format_display(df, col_map=COUNTER_DISPLAY_COLS):
     return out
 
 
+def to_excel_bytes(sheets: dict):
+    """Build an in-memory .xlsx file from {sheet_name: DataFrame}."""
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            safe_name = sheet_name[:31]  # Excel sheet name limit
+            df.to_excel(writer, sheet_name=safe_name, index=False)
+    return buffer.getvalue()
+
+
 # ---------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------
@@ -107,7 +118,7 @@ def format_display(df, col_map=COUNTER_DISPLAY_COLS):
 def login():
     st.title("🔐 TPS Management System - Login")
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1, 1, 1])
 
     with col1:
         st.subheader("Employee Login")
@@ -147,6 +158,27 @@ def login():
                     st.rerun()
                 else:
                     st.error("Invalid TL ID or Password")
+            except Exception as e:
+                st.error(f"Login error: {str(e)}")
+
+    with col3:
+        st.subheader("Admin Login")
+        admin_id = st.text_input("Admin ID", key="admin_id")
+        admin_password = st.text_input("Password", type="password", key="admin_password")
+
+        if st.button("Login as Admin", key="admin_login_btn", use_container_width=True):
+            try:
+                result = supabase.table("admin_users").select("admin_name").eq("admin_id", admin_id).eq("admin_password", admin_password).execute()
+
+                if result.data and len(result.data) > 0:
+                    st.session_state.logged_in = True
+                    st.session_state.user_type = 'admin'
+                    st.session_state.user_id = admin_id
+                    st.session_state.user_name = result.data[0]['admin_name']
+                    st.success(f"Welcome, {result.data[0]['admin_name']}!")
+                    st.rerun()
+                else:
+                    st.error("Invalid Admin ID or Password")
             except Exception as e:
                 st.error(f"Login error: {str(e)}")
 
@@ -193,15 +225,8 @@ def employee_dashboard():
         partners_data = fetch_all_rows("partners", eq_filters={"emp_id": st.session_state.user_id})
 
         if partners_data:
-            partner_df = pd.DataFrame(partners_data)
-            search = st.text_input("🔎 Search my counters (name, GST, city, state)", key="my_counter_search")
-            if search:
-                mask = partner_df.apply(
-                    lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
-                )
-                partner_df = partner_df[mask]
-
-            display_cols = [c for c in ["partner_name", "gst_number", "city", "state", "status", "created_date"] if c in partner_df.columns]
+            full_partner_df = pd.DataFrame(partners_data)
+            display_cols = [c for c in ["partner_name", "gst_number", "city", "state", "status", "created_date"] if c in full_partner_df.columns]
             rename = {
                 "partner_name": "CAR Counter Name",
                 "gst_number": "CAR GST Number",
@@ -210,6 +235,42 @@ def employee_dashboard():
                 "status": "Status",
                 "created_date": "Created Date",
             }
+
+            dl_col, search_col = st.columns([1, 3])
+            with search_col:
+                search = st.text_input("🔎 Search my counters (name, GST, city, state)", key="my_counter_search")
+            with dl_col:
+                st.write("")
+                profile_df = pd.DataFrame([{
+                    "Employee ID": emp_data.get("emp_id"),
+                    "Name": emp_data.get("emp_name"),
+                    "Region": emp_data.get("region"),
+                    "Category": emp_data.get("sales_force_category"),
+                    "Contact Number": emp_data.get("contact_number"),
+                    "Email": emp_data.get("email"),
+                    "Field Operations Manager": emp_data.get("field_operations_manager"),
+                    "Reporting Manager": emp_data.get("reporting_manager"),
+                    "Regional Manager": emp_data.get("regional_manager"),
+                }])
+                excel_bytes = to_excel_bytes({
+                    "My Profile": profile_df,
+                    "My Counters": full_partner_df[display_cols].rename(columns=rename),
+                })
+                st.download_button(
+                    "⬇️ Download My TPS (Excel)",
+                    excel_bytes,
+                    file_name=f"TPS_{st.session_state.user_id}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+            partner_df = full_partner_df
+            if search:
+                mask = partner_df.apply(
+                    lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
+                )
+                partner_df = partner_df[mask]
+
             st.caption(f"{len(partner_df)} counter(s)")
             st.dataframe(partner_df[display_cols].rename(columns=rename), use_container_width=True, hide_index=True)
         else:
@@ -485,6 +546,113 @@ def tl_dashboard():
 
 
 # ---------------------------------------------------------------
+# Admin Dashboard
+# ---------------------------------------------------------------
+
+def admin_dashboard():
+    st.title(f"🛡️ Admin Dashboard - {st.session_state.user_name}")
+
+    try:
+        emp_df = get_all_employees_df()
+        partners_df = get_all_partners_df()
+        requests_result = supabase.table("partner_requests").select("*").execute()
+        requests_df = pd.DataFrame(requests_result.data or [])
+
+        # ---- Overview metrics ----
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Employees", len(emp_df))
+        with col2:
+            st.metric("Total Counters", len(partners_df))
+        with col3:
+            pending_n = len(requests_df[requests_df["status"] == "Pending"]) if not requests_df.empty else 0
+            st.metric("Pending Requests", pending_n)
+        with col4:
+            approved_n = len(requests_df[requests_df["status"] == "Approved"]) if not requests_df.empty else 0
+            st.metric("Approved (TL confirmed)", approved_n)
+
+        st.divider()
+
+        # ---- Complete TPS download ----
+        st.subheader("⬇️ Download Complete TPS")
+        st.caption("Includes every employee and every counter currently in the system, including counters added from TL-approved requests.")
+
+        if not partners_df.empty:
+            merge_cols = [c for c in ["emp_id", "region", "sales_force_category", "emp_name",
+                                       "contact_number", "email", "field_operations_manager",
+                                       "reporting_manager", "regional_manager"] if c in emp_df.columns]
+            merged = partners_df.merge(emp_df[merge_cols], on="emp_id", how="left")
+            counters_export = format_display(merged)
+        else:
+            counters_export = pd.DataFrame()
+
+        employees_export = emp_df.rename(columns={
+            "emp_id": "Employee ID", "emp_name": "Name", "region": "Region",
+            "sales_force_category": "Category", "contact_number": "Contact Number",
+            "email": "FOS Email ID", "field_operations_manager": "Field Operations Manager",
+            "reporting_manager": "Reporting Manager", "regional_manager": "Regional Manager",
+        }) if not emp_df.empty else pd.DataFrame()
+
+        requests_export = requests_df.rename(columns={
+            "emp_id": "Employee ID", "emp_name": "Name", "new_partner_name": "New Partner Name",
+            "new_gst_number": "New GST Number", "new_city": "City", "new_state": "State",
+            "reason": "Reason", "requested_date": "Requested Date", "status": "Status",
+            "tl_comments": "TL Comments", "reviewed_by": "Reviewed By", "reviewed_date": "Reviewed Date",
+        }) if not requests_df.empty else pd.DataFrame()
+
+        excel_bytes = to_excel_bytes({
+            "All Employees": employees_export,
+            "All Counters": counters_export,
+            "Partner Requests": requests_export,
+        })
+        st.download_button(
+            "⬇️ Download Complete TPS (Excel)",
+            excel_bytes,
+            file_name=f"Complete_TPS_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        st.divider()
+
+        # ---- Full data view, Excel-style, filterable ----
+        st.subheader("📊 All Counters (Excel view)")
+        if counters_export.empty:
+            st.info("No counters found.")
+        else:
+            fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+            with fcol1:
+                regions = ["All"] + sorted([r for r in counters_export["Region"].dropna().unique()])
+                region_filter = st.selectbox("Region", regions, key="admin_region")
+            with fcol2:
+                states = ["All"] + sorted([s for s in counters_export["State"].dropna().unique()])
+                state_filter = st.selectbox("State", states, key="admin_state")
+            with fcol3:
+                cats = ["All"] + sorted([c for c in counters_export["Sales Force Category"].dropna().unique()])
+                cat_filter = st.selectbox("Category", cats, key="admin_cat")
+            with fcol4:
+                search = st.text_input("🔎 Search", key="admin_search")
+
+            filtered = counters_export.copy()
+            if region_filter != "All":
+                filtered = filtered[filtered["Region"] == region_filter]
+            if state_filter != "All":
+                filtered = filtered[filtered["State"] == state_filter]
+            if cat_filter != "All":
+                filtered = filtered[filtered["Sales Force Category"] == cat_filter]
+            if search:
+                mask = filtered.apply(
+                    lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
+                )
+                filtered = filtered[mask]
+
+            st.caption(f"{len(filtered)} counter(s)")
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Error loading Admin dashboard: {str(e)}")
+
+
+# ---------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------
 
@@ -503,6 +671,8 @@ def main():
             employee_dashboard()
         elif st.session_state.user_type == 'tl':
             tl_dashboard()
+        elif st.session_state.user_type == 'admin':
+            admin_dashboard()
 
 if __name__ == "__main__":
     main()
