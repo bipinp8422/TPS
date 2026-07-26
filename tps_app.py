@@ -573,10 +573,7 @@ def admin_dashboard():
 
         st.divider()
 
-        # ---- Complete TPS download ----
-        st.subheader("⬇️ Download Complete TPS")
-        st.caption("Includes every employee and every counter currently in the system, including counters added from TL-approved requests.")
-
+        # ---- Compute the Excel-style merged counters view (used below) ----
         if not partners_df.empty:
             merge_cols = [c for c in ["emp_id", "region", "sales_force_category", "emp_name",
                                        "contact_number", "email", "field_operations_manager",
@@ -586,31 +583,73 @@ def admin_dashboard():
         else:
             counters_export = pd.DataFrame()
 
-        employees_export = emp_df.rename(columns={
-            "emp_id": "Employee ID", "emp_name": "Name", "region": "Region",
-            "sales_force_category": "Category", "contact_number": "Contact Number",
-            "email": "FOS Email ID", "field_operations_manager": "Field Operations Manager",
-            "reporting_manager": "Reporting Manager", "regional_manager": "Regional Manager",
-        }) if not emp_df.empty else pd.DataFrame()
+        # ---- Manage Employees ----
+        st.subheader("👤 Manage Employees")
+        add_tab, delete_tab = st.tabs(["➕ Add Employee", "🗑️ Delete Employee"])
 
-        requests_export = requests_df.rename(columns={
-            "emp_id": "Employee ID", "emp_name": "Name", "new_partner_name": "New Partner Name",
-            "new_gst_number": "New GST Number", "new_city": "City", "new_state": "State",
-            "reason": "Reason", "requested_date": "Requested Date", "status": "Status",
-            "tl_comments": "TL Comments", "reviewed_by": "Reviewed By", "reviewed_date": "Reviewed Date",
-        }) if not requests_df.empty else pd.DataFrame()
+        with add_tab:
+            with st.form("add_employee_form", clear_on_submit=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_emp_id = st.text_input("Employee ID *")
+                    new_emp_name = st.text_input("Name *")
+                    new_contact = st.text_input("Contact Number")
+                    new_email = st.text_input("Email")
+                    new_category = st.text_input("Sales Force Category")
+                with col2:
+                    new_region = st.text_input("Region")
+                    new_fom = st.text_input("Field Operations Manager")
+                    new_rm = st.text_input("Reporting Manager")
+                    new_regional_mgr = st.text_input("Regional Manager")
 
-        excel_bytes = to_excel_bytes({
-            "All Employees": employees_export,
-            "All Counters": counters_export,
-            "Partner Requests": requests_export,
-        })
-        st.download_button(
-            "⬇️ Download Complete TPS (Excel)",
-            excel_bytes,
-            file_name=f"Complete_TPS_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+                if st.form_submit_button("Add Employee", use_container_width=True):
+                    if new_emp_id and new_emp_name:
+                        try:
+                            supabase.table("employees").insert({
+                                "emp_id": new_emp_id.strip(),
+                                "emp_name": new_emp_name.strip(),
+                                "contact_number": new_contact or None,
+                                "email": new_email or None,
+                                "sales_force_category": new_category or None,
+                                "region": new_region or None,
+                                "field_operations_manager": new_fom or None,
+                                "reporting_manager": new_rm or None,
+                                "regional_manager": new_regional_mgr or None,
+                            }).execute()
+                            st.success(f"✅ Employee {new_emp_id} added.")
+                            get_all_employees_df.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error adding employee: {str(e)}")
+                    else:
+                        st.error("Employee ID and Name are required")
+
+        with delete_tab:
+            if emp_df.empty:
+                st.info("No employees to delete.")
+            else:
+                options = (emp_df["emp_id"] + " - " + emp_df["emp_name"].fillna("")).tolist()
+                choice = st.selectbox("Select employee to delete", options, key="delete_emp_select")
+                emp_id_to_delete = choice.split(" - ")[0] if choice else None
+
+                if emp_id_to_delete:
+                    counter_count = len(partners_df[partners_df["emp_id"] == emp_id_to_delete]) if not partners_df.empty else 0
+                    st.warning(
+                        f"Deleting **{choice}** will also permanently delete their "
+                        f"**{counter_count} counter(s)** and any partner request history for this employee."
+                    )
+                    confirm = st.checkbox("I understand this cannot be undone", key="delete_emp_confirm")
+                    if st.button("🗑️ Delete Employee", disabled=not confirm, use_container_width=True):
+                        try:
+                            supabase.table("partners").delete().eq("emp_id", emp_id_to_delete).execute()
+                            supabase.table("partner_requests").delete().eq("emp_id", emp_id_to_delete).execute()
+                            supabase.table("employees").delete().eq("emp_id", emp_id_to_delete).execute()
+                            st.success(f"✅ Employee {emp_id_to_delete} and related data deleted.")
+                            get_all_employees_df.clear()
+                            get_all_partners_df.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error deleting employee: {str(e)}")
 
         st.divider()
 
