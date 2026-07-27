@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 from io import BytesIO
 import os
+import re
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -61,6 +62,44 @@ if 'logged_in' not in st.session_state:
 # ---------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------
+
+def validate_gst_format(gst_number):
+    """
+    Validate GST format.
+    GST is 15 characters: 2 digits (state code) + 10 chars (PAN) + 1 char (entity) + 1 checksum
+    Valid GST format examples: 27AAFCA1234G2Z0
+    
+    Returns: (is_valid: bool, message: str)
+    """
+    if not gst_number:
+        return False, "GST Number is required"
+    
+    gst_number = gst_number.strip().upper()
+    
+    # Check length
+    if len(gst_number) != 15:
+        return False, f"❌ GST Number must be exactly 15 characters (currently {len(gst_number)})"
+    
+    # Check if all characters are alphanumeric
+    if not gst_number.isalnum():
+        return False, "❌ GST Number must contain only letters and numbers (no spaces or special characters)"
+    
+    # Standard GST format: 2 digits + 5 letters + 4 digits + 1 letter + 1 alphanumeric (1-9 or A-Z) + Z + 1 alphanumeric
+    # Pattern breakdown:
+    # ^[0-9]{2}     - State code (2 digits)
+    # [A-Z]{5}      - PAN prefix (5 letters)
+    # [0-9]{4}      - PAN sequence (4 digits)
+    # [A-Z]{1}      - PAN check digit (1 letter)
+    # [1-9A-Z]{1}   - Entity code (1 to 9 or A to Z)
+    # [Z]{1}        - Fixed Z
+    # [0-9A-Z]{1}$  - Checksum (0-9 or A-Z)
+    pattern = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
+    
+    if re.match(pattern, gst_number):
+        return True, "✅ Valid GST format"
+    
+    return False, "❌ Invalid GST format. Expected 15 alphanumeric characters (e.g., 27AAFCA1234G2Z0)"
+
 
 def fetch_all_rows(table_name, select="*", eq_filters=None):
     """Fetch every row from a Supabase table, paging past the default
@@ -280,37 +319,50 @@ def employee_dashboard():
 
         # ---- Request new partner/counter ----
         st.subheader("➕ Request New Counter/Partner")
+        
+        st.info("📋 **GST Format:** 15 alphanumeric characters (e.g., 27AAFCA1234G2Z0)")
+        
         with st.form("new_partner_request"):
             col1, col2 = st.columns(2)
 
             with col1:
                 new_partner_name = st.text_input("New Partner Name")
-                new_gst = st.text_input("New GST Number")
+                new_gst = st.text_input("New GST Number", placeholder="e.g., 27AAFCA1234G2Z0")
                 new_city = st.text_input("City")
 
             with col2:
                 new_state = st.text_input("State")
                 reason = st.text_area("Reason for New Counter", height=80)
 
+            # Validate GST format before submission
+            gst_valid = True
+            if new_gst:
+                gst_valid, gst_message = validate_gst_format(new_gst)
+                if not gst_valid:
+                    st.error(gst_message)
+
             if st.form_submit_button("Submit Request", use_container_width=True):
                 if new_partner_name and new_gst and reason:
-                    try:
-                        request_data = {
-                            'emp_id': st.session_state.user_id,
-                            'emp_name': emp_data['emp_name'],
-                            'new_partner_name': new_partner_name,
-                            'new_gst_number': new_gst,
-                            'new_city': new_city,
-                            'new_state': new_state,
-                            'reason': reason,
-                            'requested_date': datetime.now().isoformat(),
-                            'status': 'Pending'
-                        }
-                        supabase.table("partner_requests").insert(request_data).execute()
-                        st.success("✅ Request submitted successfully! Waiting for TL approval.")
-                        get_all_partners_df.clear()
-                    except Exception as e:
-                        st.error(f"Error submitting request: {str(e)}")
+                    if gst_valid:
+                        try:
+                            request_data = {
+                                'emp_id': st.session_state.user_id,
+                                'emp_name': emp_data['emp_name'],
+                                'new_partner_name': new_partner_name,
+                                'new_gst_number': new_gst.strip().upper(),
+                                'new_city': new_city,
+                                'new_state': new_state,
+                                'reason': reason,
+                                'requested_date': datetime.now().isoformat(),
+                                'status': 'Pending'
+                            }
+                            supabase.table("partner_requests").insert(request_data).execute()
+                            st.success("✅ Request submitted successfully! Waiting for TL approval.")
+                            get_all_partners_df.clear()
+                        except Exception as e:
+                            st.error(f"Error submitting request: {str(e)}")
+                    else:
+                        st.error("❌ Please enter a valid GST number before submitting.")
                 else:
                     st.error("Please fill all required fields (name, GST, reason)")
 
