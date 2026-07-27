@@ -625,6 +625,148 @@ def admin_dashboard():
 
         st.divider()
 
+        # ---- Upload TPS Excel File ----
+        st.subheader("📤 Upload TPS Excel File")
+        
+        with st.expander("ℹ️ Upload Instructions", expanded=False):
+            st.info("""
+            **Excel File Requirements:**
+            - File must have sheets with employees and counters data
+            - Expected columns for employees: emp_id, emp_name, region, sales_force_category, contact_number, email, field_operations_manager, reporting_manager, regional_manager
+            - Expected columns for counters: partner_name, gst_number, city, state, emp_id (to link to employee)
+            - GST numbers must be in valid format (15 alphanumeric characters, e.g., 27AAFCA1234G2Z0)
+            """)
+        
+        uploaded_file = st.file_uploader("Choose TPS Excel file", type=["xlsx", "xls"], key="tps_upload")
+        
+        if uploaded_file:
+            try:
+                # Read Excel file
+                xls = pd.ExcelFile(uploaded_file)
+                sheet_names = xls.sheet_names
+                
+                st.info(f"📋 Found sheets: {', '.join(sheet_names)}")
+                
+                # Let admin select which sheets contain employees and counters
+                col1, col2 = st.columns(2)
+                with col1:
+                    emp_sheet = st.selectbox("Sheet with Employee Data", sheet_names, key="emp_sheet_select")
+                with col2:
+                    counter_sheet = st.selectbox("Sheet with Counter Data", sheet_names, key="counter_sheet_select")
+                
+                if st.button("Preview Data", key="preview_upload_btn"):
+                    emp_df_upload = pd.read_excel(uploaded_file, sheet_name=emp_sheet)
+                    counter_df_upload = pd.read_excel(uploaded_file, sheet_name=counter_sheet)
+                    
+                    st.subheader("👥 Employee Preview")
+                    st.dataframe(emp_df_upload.head(), use_container_width=True)
+                    
+                    st.subheader("🏬 Counter Preview")
+                    st.dataframe(counter_df_upload.head(), use_container_width=True)
+                
+                if st.button("⬆️ Upload & Import Data", key="upload_tps_btn", type="primary"):
+                    emp_df_upload = pd.read_excel(uploaded_file, sheet_name=emp_sheet)
+                    counter_df_upload = pd.read_excel(uploaded_file, sheet_name=counter_sheet)
+                    
+                    # Progress tracking
+                    progress_bar = st.progress(0)
+                    status_placeholder = st.empty()
+                    
+                    try:
+                        # Clean column names (remove whitespace)
+                        emp_df_upload.columns = emp_df_upload.columns.str.strip()
+                        counter_df_upload.columns = counter_df_upload.columns.str.strip()
+                        
+                        # Upload employees
+                        emp_count = 0
+                        for idx, row in emp_df_upload.iterrows():
+                            emp_data = {
+                                "emp_id": str(row.get("emp_id", "")).strip(),
+                                "emp_name": str(row.get("emp_name", "")).strip(),
+                                "region": str(row.get("region", "")) if pd.notna(row.get("region")) else None,
+                                "sales_force_category": str(row.get("sales_force_category", "")) if pd.notna(row.get("sales_force_category")) else None,
+                                "contact_number": str(row.get("contact_number", "")) if pd.notna(row.get("contact_number")) else None,
+                                "email": str(row.get("email", "")) if pd.notna(row.get("email")) else None,
+                                "field_operations_manager": str(row.get("field_operations_manager", "")) if pd.notna(row.get("field_operations_manager")) else None,
+                                "reporting_manager": str(row.get("reporting_manager", "")) if pd.notna(row.get("reporting_manager")) else None,
+                                "regional_manager": str(row.get("regional_manager", "")) if pd.notna(row.get("regional_manager")) else None,
+                            }
+                            
+                            # Skip if emp_id is empty
+                            if emp_data["emp_id"]:
+                                try:
+                                    supabase.table("employees").insert(emp_data).execute()
+                                    emp_count += 1
+                                except Exception as e:
+                                    # Employee might already exist, try update
+                                    try:
+                                        supabase.table("employees").update(emp_data).eq("emp_id", emp_data["emp_id"]).execute()
+                                        emp_count += 1
+                                    except:
+                                        pass
+                        
+                        progress_bar.progress(50)
+                        status_placeholder.info(f"✅ Imported {emp_count} employees")
+                        
+                        # Upload counters
+                        counter_count = 0
+                        invalid_gst_count = 0
+                        
+                        for idx, row in counter_df_upload.iterrows():
+                            gst = str(row.get("gst_number", "")).strip().upper()
+                            
+                            # Validate GST
+                            gst_valid, _ = validate_gst_format(gst)
+                            
+                            if not gst_valid:
+                                invalid_gst_count += 1
+                                st.warning(f"Row {idx+2}: Invalid GST format '{gst}' - Skipping this counter")
+                                continue
+                            
+                            counter_data = {
+                                "partner_id": f"P{datetime.now().strftime('%Y%m%d%H%M%S')}{idx}",
+                                "partner_name": str(row.get("partner_name", "")).strip(),
+                                "gst_number": gst,
+                                "city": str(row.get("city", "")) if pd.notna(row.get("city")) else None,
+                                "state": str(row.get("state", "")) if pd.notna(row.get("state")) else None,
+                                "emp_id": str(row.get("emp_id", "")).strip(),
+                                "status": "Active",
+                                "created_date": datetime.now().isoformat()
+                            }
+                            
+                            if counter_data["partner_name"] and counter_data["emp_id"]:
+                                try:
+                                    supabase.table("partners").insert(counter_data).execute()
+                                    counter_count += 1
+                                except Exception as e:
+                                    st.warning(f"Row {idx+2}: Could not insert counter - {str(e)}")
+                        
+                        progress_bar.progress(100)
+                        
+                        st.success(f"""
+                        ✅ **Upload Complete!**
+                        - Employees imported: {emp_count}
+                        - Counters imported: {counter_count}
+                        - Invalid GST numbers skipped: {invalid_gst_count}
+                        """)
+                        
+                        # Clear cache
+                        get_all_employees_df.clear()
+                        get_all_partners_df.clear()
+                        
+                        # Rerun after a delay
+                        import time
+                        time.sleep(2)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error during upload: {str(e)}")
+                        
+            except Exception as e:
+                st.error(f"❌ Error reading file: {str(e)}")
+
+        st.divider()
+
         # ---- Compute the Excel-style merged counters view (used below) ----
         if not partners_df.empty:
             merge_cols = [c for c in ["emp_id", "region", "sales_force_category", "emp_name",
