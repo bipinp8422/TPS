@@ -540,6 +540,21 @@ def tl_dashboard():
     st.title(f"👨‍💼 TL Dashboard - {st.session_state.user_name}")
 
     try:
+        # Get TL's region from tl_users table
+        tl_result = supabase.table("tl_users").select("region").eq("tl_id", st.session_state.user_id).execute()
+        tl_region = None
+        
+        if tl_result.data and len(tl_result.data) > 0:
+            tl_region = tl_result.data[0].get('region')
+        
+        # Show region info
+        if tl_region:
+            st.success(f"🔍 Region: **{tl_region}** - Viewing employees and requests from this region only")
+        else:
+            st.warning("⚠️ TL region not assigned. Contact admin to set your region.")
+        
+        st.divider()
+        
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📥 Pending New Counter Requests", "✅ Approved Requests", "❌ Rejected Requests",
             "👥 All Employees", "🏬 All Counters (Excel view)", 
@@ -550,6 +565,12 @@ def tl_dashboard():
         with tab1:
             st.subheader("Pending Partner Requests")
             pending_result = supabase.table("partner_requests").select("*").eq("status", "Pending").order("requested_date").execute()
+            
+            # Filter by region if TL has one assigned
+            if tl_region and pending_result.data:
+                pending_result.data = [req for req in pending_result.data 
+                                      if supabase.table("employees").select("region").eq("emp_id", req['emp_id']).execute().data
+                                      and supabase.table("employees").select("region").eq("emp_id", req['emp_id']).execute().data[0]['region'] == tl_region]
 
             if pending_result.data and len(pending_result.data) > 0:
                 for req in pending_result.data:
