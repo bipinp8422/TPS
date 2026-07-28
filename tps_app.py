@@ -122,6 +122,39 @@ def fetch_all_rows(table_name, select="*", eq_filters=None):
     return rows
 
 
+def get_tl_region(tl_id):
+    """
+    Look up the TL's region, tolerant of column-name casing.
+
+    Some Supabase tables were created with a quoted/capitalized column
+    name (e.g. "Region" instead of region), which makes PostgREST
+    case-sensitive for that column and causes:
+      {'message': 'column tl_users.region does not exist', 'code': '42703', ...}
+
+    This tries the lowercase name first (the convention used everywhere
+    else in this app) and falls back to the capitalized variant so the
+    dashboard keeps working either way.
+
+    Recommended long-term fix (run once in the Supabase SQL editor):
+        ALTER TABLE tl_users RENAME COLUMN "Region" TO region;
+    After that, this function will just use the fast lowercase path.
+    """
+    for col in ("region", "Region", "REGION"):
+        try:
+            result = supabase.table("tl_users").select(col).eq("tl_id", tl_id).execute()
+            if result.data and len(result.data) > 0:
+                return result.data[0].get(col)
+            return None
+        except Exception as e:
+            msg = str(e)
+            if "does not exist" in msg or "42703" in msg:
+                # Try the next casing variant
+                continue
+            # Some other error (network, auth, etc.) - surface it
+            raise
+    return None
+
+
 @st.cache_data(ttl=120)
 def get_all_employees_df():
     data = fetch_all_rows("employees")
@@ -540,12 +573,8 @@ def tl_dashboard():
     st.title(f"👨‍💼 TL Dashboard - {st.session_state.user_name}")
 
     try:
-        # Get TL's region from tl_users table
-        tl_result = supabase.table("tl_users").select("region").eq("tl_id", st.session_state.user_id).execute()
-        tl_region = None
-        
-        if tl_result.data and len(tl_result.data) > 0:
-            tl_region = tl_result.data[0].get('region')
+        # Get TL's region from tl_users table (tolerant of region/Region casing)
+        tl_region = get_tl_region(st.session_state.user_id)
         
         # Show region info
         if tl_region:
