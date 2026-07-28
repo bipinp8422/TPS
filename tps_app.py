@@ -580,8 +580,21 @@ def tl_dashboard():
         if tl_region:
             st.success(f"🔍 Region: **{tl_region}** - Viewing employees and requests from this region only")
         else:
-            st.warning("⚠️ TL region not assigned. Contact admin to set your region.")
-        
+            st.warning("⚠️ TL region not assigned. Contact admin to set your region. Showing all regions until then.")
+
+        # Build the set of employee IDs in this TL's region once, up front.
+        # Every tab below filters against this set instead of hitting the
+        # database per-row (which was slow and is what caused the earlier
+        # N+1 query pattern).
+        emp_df_all = get_all_employees_df()
+        if tl_region and not emp_df_all.empty and "region" in emp_df_all.columns:
+            region_emp_ids = set(emp_df_all[emp_df_all["region"] == tl_region]["emp_id"])
+        else:
+            # No region assigned to this TL yet, or no employees have a
+            # region set - fall back to showing everything so the TL
+            # dashboard isn't empty/broken while region setup is in progress.
+            region_emp_ids = set(emp_df_all["emp_id"]) if not emp_df_all.empty else set()
+
         st.divider()
         
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
@@ -594,12 +607,9 @@ def tl_dashboard():
         with tab1:
             st.subheader("Pending Partner Requests")
             pending_result = supabase.table("partner_requests").select("*").eq("status", "Pending").order("requested_date").execute()
-            
-            # Filter by region if TL has one assigned
-            if tl_region and pending_result.data:
-                pending_result.data = [req for req in pending_result.data 
-                                      if supabase.table("employees").select("region").eq("emp_id", req['emp_id']).execute().data
-                                      and supabase.table("employees").select("region").eq("emp_id", req['emp_id']).execute().data[0]['region'] == tl_region]
+
+            if pending_result.data:
+                pending_result.data = [req for req in pending_result.data if req.get('emp_id') in region_emp_ids]
 
             if pending_result.data and len(pending_result.data) > 0:
                 for req in pending_result.data:
@@ -672,6 +682,9 @@ def tl_dashboard():
             st.subheader("Approved Partner Requests")
             approved_result = supabase.table("partner_requests").select("*").eq("status", "Approved").order("reviewed_date", desc=True).execute()
 
+            if approved_result.data:
+                approved_result.data = [req for req in approved_result.data if req.get('emp_id') in region_emp_ids]
+
             if approved_result.data and len(approved_result.data) > 0:
                 approved_df = pd.DataFrame(approved_result.data)
                 cols = [c for c in ["emp_name", "new_partner_name", "new_gst_number", "new_city", "new_state", "requested_date", "reviewed_date"] if c in approved_df.columns]
@@ -684,6 +697,9 @@ def tl_dashboard():
             st.subheader("Rejected Partner Requests")
             rejected_result = supabase.table("partner_requests").select("*").eq("status", "Rejected").order("reviewed_date", desc=True).execute()
 
+            if rejected_result.data:
+                rejected_result.data = [req for req in rejected_result.data if req.get('emp_id') in region_emp_ids]
+
             if rejected_result.data and len(rejected_result.data) > 0:
                 rejected_df = pd.DataFrame(rejected_result.data)
                 cols = [c for c in ["emp_name", "new_partner_name", "new_gst_number", "new_city", "new_state", "requested_date", "reviewed_date"] if c in rejected_df.columns]
@@ -695,7 +711,9 @@ def tl_dashboard():
         with tab4:
             st.subheader("Employee Master Data")
             emp_df = get_all_employees_df()
+            emp_df = emp_df[emp_df["emp_id"].isin(region_emp_ids)] if not emp_df.empty else emp_df
             partners_df = get_all_partners_df()
+            partners_df = partners_df[partners_df["emp_id"].isin(region_emp_ids)] if not partners_df.empty else partners_df
 
             if emp_df.empty:
                 st.info("No employees found.")
@@ -747,6 +765,7 @@ def tl_dashboard():
             st.subheader("All CAR Counters (matches TPS_New.xlsx layout)")
             emp_df = get_all_employees_df()
             partners_df = get_all_partners_df()
+            partners_df = partners_df[partners_df["emp_id"].isin(region_emp_ids)] if not partners_df.empty else partners_df
 
             if partners_df.empty:
                 st.info("No counters found.")
@@ -797,6 +816,9 @@ def tl_dashboard():
         with tab6:
             st.subheader("Pending Counter Removal Requests")
             pending_removal_result = supabase.table("counter_removal_requests").select("*").eq("status", "Pending").order("requested_date").execute()
+
+            if pending_removal_result.data:
+                pending_removal_result.data = [req for req in pending_removal_result.data if req.get('emp_id') in region_emp_ids]
 
             if pending_removal_result.data and len(pending_removal_result.data) > 0:
                 for req in pending_removal_result.data:
@@ -859,6 +881,9 @@ def tl_dashboard():
         with tab7:
             st.subheader("Approved Counter Removals")
             approved_removal_result = supabase.table("counter_removal_requests").select("*").eq("status", "Approved").order("reviewed_date", desc=True).execute()
+
+            if approved_removal_result.data:
+                approved_removal_result.data = [req for req in approved_removal_result.data if req.get('emp_id') in region_emp_ids]
 
             if approved_removal_result.data and len(approved_removal_result.data) > 0:
                 approved_removal_df = pd.DataFrame(approved_removal_result.data)
