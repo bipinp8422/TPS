@@ -150,6 +150,59 @@ def to_excel_bytes(sheets: dict):
     return buffer.getvalue()
 
 
+def to_excel_bytes_formatted(sheets: dict, title_row=True):
+    """Build a formatted .xlsx file with colors and auto-sized columns."""
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            safe_name = sheet_name[:31]
+            df.to_excel(writer, sheet_name=safe_name, index=False)
+            
+            # Get the worksheet to format it
+            worksheet = writer.sheets[safe_name]
+            
+            # Format headers
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            
+            # Apply header formatting
+            for cell in worksheet[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = header_alignment
+            
+            # Auto-size columns
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if cell.value:
+                            max_length = max(max_length, len(str(cell.value)))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                worksheet.column_dimensions[column_letter].width = adjusted_width
+            
+            # Add borders
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, 
+                                          min_col=1, max_col=worksheet.max_column):
+                for cell in row:
+                    cell.border = thin_border
+                    if cell.row > 1:  # Data rows
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+    
+    return buffer.getvalue()
+
+
 # ---------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------
@@ -275,31 +328,52 @@ def employee_dashboard():
                 "created_date": "Created Date",
             }
 
-            dl_col, search_col = st.columns([1, 3])
+            search_col, dl_col = st.columns([3, 1])
             with search_col:
                 search = st.text_input("🔎 Search my counters (name, GST, city, state)", key="my_counter_search")
             with dl_col:
-                st.write("")
-                profile_df = pd.DataFrame([{
-                    "Employee ID": emp_data.get("emp_id"),
-                    "Name": emp_data.get("emp_name"),
-                    "Region": emp_data.get("region"),
-                    "Category": emp_data.get("sales_force_category"),
-                    "Contact Number": emp_data.get("contact_number"),
-                    "Email": emp_data.get("email"),
-                    "Field Operations Manager": emp_data.get("field_operations_manager"),
-                    "Reporting Manager": emp_data.get("reporting_manager"),
-                    "Regional Manager": emp_data.get("regional_manager"),
-                }])
-                excel_bytes = to_excel_bytes({
+                st.write("")  # Spacing for alignment
+            
+            # Download options
+            st.write("**Download Options:**")
+            dl_col1, dl_col2 = st.columns(2)
+            
+            profile_df = pd.DataFrame([{
+                "Employee ID": emp_data.get("emp_id"),
+                "Name": emp_data.get("emp_name"),
+                "Region": emp_data.get("region"),
+                "Category": emp_data.get("sales_force_category"),
+                "Contact Number": emp_data.get("contact_number"),
+                "Email": emp_data.get("email"),
+                "Field Operations Manager": emp_data.get("field_operations_manager"),
+                "Reporting Manager": emp_data.get("reporting_manager"),
+                "Regional Manager": emp_data.get("regional_manager"),
+            }])
+            
+            counters_display_df = full_partner_df[display_cols].rename(columns=rename)
+            
+            # Excel Download (Formatted)
+            with dl_col1:
+                excel_bytes_formatted = to_excel_bytes_formatted({
                     "My Profile": profile_df,
-                    "My Counters": full_partner_df[display_cols].rename(columns=rename),
+                    "My Counters": counters_display_df,
                 })
                 st.download_button(
-                    "⬇️ Download My TPS (Excel)",
-                    excel_bytes,
-                    file_name=f"TPS_{st.session_state.user_id}.xlsx",
+                    "📊 Download Excel",
+                    excel_bytes_formatted,
+                    file_name=f"TPS_{st.session_state.user_id}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            
+            # CSV Download (Counters only)
+            with dl_col2:
+                csv_data = counters_display_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📄 Download CSV",
+                    csv_data,
+                    file_name=f"My_Counters_{st.session_state.user_id}_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
                     use_container_width=True,
                 )
 
@@ -379,6 +453,73 @@ def employee_dashboard():
         else:
             st.info("No requests yet")
 
+        st.divider()
+
+        # ---- Request Counter Removal ----
+        st.subheader("🗑️ Request Counter Removal")
+        
+        if partners_data:
+            with st.form("remove_counter_request"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Select counter to remove
+                    counter_options = {f"{p['partner_name']} ({p['gst_number']})": p['partner_id'] 
+                                      for p in partners_data}
+                    selected_counter = st.selectbox(
+                        "Select Counter to Remove",
+                        options=list(counter_options.keys()),
+                        key="remove_counter_select"
+                    )
+                
+                with col2:
+                    removal_reason = st.text_area(
+                        "Reason for Removal",
+                        placeholder="e.g., Counter closed, Merger, Business restructuring",
+                        height=100,
+                        key="removal_reason"
+                    )
+                
+                if st.form_submit_button("Submit Removal Request", use_container_width=True, type="secondary"):
+                    if selected_counter and removal_reason:
+                        try:
+                            selected_partner_id = counter_options[selected_counter]
+                            # Find partner details
+                            selected_partner = next(p for p in partners_data if p['partner_id'] == selected_partner_id)
+                            
+                            removal_request_data = {
+                                'emp_id': st.session_state.user_id,
+                                'emp_name': emp_data['emp_name'],
+                                'partner_id': selected_partner_id,
+                                'partner_name': selected_partner['partner_name'],
+                                'gst_number': selected_partner['gst_number'],
+                                'removal_reason': removal_reason,
+                                'requested_date': datetime.now().isoformat(),
+                                'status': 'Pending'
+                            }
+                            supabase.table("counter_removal_requests").insert(removal_request_data).execute()
+                            st.success("✅ Removal request submitted! Waiting for TL approval.")
+                            get_all_partners_df.clear()
+                        except Exception as e:
+                            st.error(f"Error submitting removal request: {str(e)}")
+                    else:
+                        st.error("Please select a counter and provide a reason")
+        else:
+            st.info("No counters available to remove")
+
+        st.divider()
+
+        # ---- Removal Request History ----
+        st.subheader("📜 Your Removal Request History")
+        removal_requests_result = supabase.table("counter_removal_requests").select("*").eq("emp_id", st.session_state.user_id).order("requested_date", desc=True).execute()
+
+        if removal_requests_result.data and len(removal_requests_result.data) > 0:
+            removal_df = pd.DataFrame(removal_requests_result.data)
+            cols = [c for c in ["partner_name", "gst_number", "removal_reason", "requested_date", "status", "tl_comments"] if c in removal_df.columns]
+            st.dataframe(removal_df[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("No removal requests yet")
+
     except Exception as e:
         st.error(f"Error loading dashboard: {str(e)}")
 
@@ -391,9 +532,10 @@ def tl_dashboard():
     st.title(f"👨‍💼 TL Dashboard - {st.session_state.user_name}")
 
     try:
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📥 Pending Requests", "✅ Approved Requests", "❌ Rejected Requests",
-            "👥 All Employees", "🏬 All Counters (Excel view)"
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+            "📥 Pending New Counter Requests", "✅ Approved Requests", "❌ Rejected Requests",
+            "👥 All Employees", "🏬 All Counters (Excel view)", 
+            "🗑️ Pending Removal Requests", "✅ Approved Removals"
         ])
 
         # Tab 1: Pending Requests
@@ -592,6 +734,80 @@ def tl_dashboard():
                     file_name="tps_counters_export.csv",
                     mime="text/csv",
                 )
+
+        # Tab 6: Pending Removal Requests
+        with tab6:
+            st.subheader("Pending Counter Removal Requests")
+            pending_removal_result = supabase.table("counter_removal_requests").select("*").eq("status", "Pending").order("requested_date").execute()
+
+            if pending_removal_result.data and len(pending_removal_result.data) > 0:
+                for req in pending_removal_result.data:
+                    with st.container(border=True):
+                        col1, col2, col3 = st.columns([2, 2, 1])
+
+                        with col1:
+                            st.write(f"**Employee:** {req['emp_name']} ({req['emp_id']})")
+                            st.write(f"**Counter to Remove:** {req['partner_name']}")
+                            st.write(f"**GST Number:** {req['gst_number']}")
+
+                        with col2:
+                            st.write(f"**Reason:** {req['removal_reason']}")
+                            st.write(f"**Requested:** {req['requested_date']}")
+
+                        st.divider()
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            tl_comment = st.text_area("Add Comments", key=f"removal_comment_{req['partner_id']}", height=80)
+
+                        with col2:
+                            if st.button("✅ Approve & Remove", key=f"approve_removal_{req['partner_id']}"):
+                                try:
+                                    # Update removal request status
+                                    supabase.table("counter_removal_requests").update({
+                                        'status': 'Approved',
+                                        'tl_comments': tl_comment,
+                                        'reviewed_by': st.session_state.user_id,
+                                        'reviewed_date': datetime.now().isoformat()
+                                    }).eq("partner_id", req['partner_id']).eq("status", "Pending").execute()
+
+                                    # Delete the counter from partners table
+                                    supabase.table("partners").delete().eq("partner_id", req['partner_id']).execute()
+
+                                    st.success("✅ Counter removed successfully!")
+                                    get_all_partners_df.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+
+                            if st.button("❌ Reject Removal", key=f"reject_removal_{req['partner_id']}"):
+                                try:
+                                    supabase.table("counter_removal_requests").update({
+                                        'status': 'Rejected',
+                                        'tl_comments': tl_comment,
+                                        'reviewed_by': st.session_state.user_id,
+                                        'reviewed_date': datetime.now().isoformat()
+                                    }).eq("partner_id", req['partner_id']).eq("status", "Pending").execute()
+
+                                    st.error("❌ Removal request rejected!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+            else:
+                st.info("✅ No pending removal requests!")
+
+        # Tab 7: Approved Removals
+        with tab7:
+            st.subheader("Approved Counter Removals")
+            approved_removal_result = supabase.table("counter_removal_requests").select("*").eq("status", "Approved").order("reviewed_date", desc=True).execute()
+
+            if approved_removal_result.data and len(approved_removal_result.data) > 0:
+                approved_removal_df = pd.DataFrame(approved_removal_result.data)
+                cols = [c for c in ["emp_name", "partner_name", "gst_number", "removal_reason", "requested_date", "reviewed_date"] if c in approved_removal_df.columns]
+                st.dataframe(approved_removal_df[cols], use_container_width=True, hide_index=True)
+            else:
+                st.info("No approved removals")
 
     except Exception as e:
         st.error(f"Error loading TL dashboard: {str(e)}")
