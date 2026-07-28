@@ -215,20 +215,28 @@ def login():
     with col1:
         st.subheader("Employee Login")
         emp_id = st.text_input("Employee ID", key="emp_id")
+        emp_password = st.text_input("Password", type="password", key="emp_password")
 
         if st.button("Login as Employee", key="emp_login_btn", use_container_width=True):
             try:
-                result = supabase.table("employees").select("emp_name").eq("emp_id", emp_id).execute()
+                # First, check if credentials exist in employee_users table
+                auth_result = supabase.table("employee_users").select("emp_id").eq("emp_id", emp_id).eq("emp_password", emp_password).execute()
 
-                if result.data and len(result.data) > 0:
-                    st.session_state.logged_in = True
-                    st.session_state.user_type = 'employee'
-                    st.session_state.user_id = emp_id
-                    st.session_state.user_name = result.data[0]['emp_name']
-                    st.success(f"Welcome, {result.data[0]['emp_name']}!")
-                    st.rerun()
+                if auth_result.data and len(auth_result.data) > 0:
+                    # Credentials are correct, now get employee details
+                    emp_result = supabase.table("employees").select("emp_name").eq("emp_id", emp_id).execute()
+                    
+                    if emp_result.data and len(emp_result.data) > 0:
+                        st.session_state.logged_in = True
+                        st.session_state.user_type = 'employee'
+                        st.session_state.user_id = emp_id
+                        st.session_state.user_name = emp_result.data[0]['emp_name']
+                        st.success(f"Welcome, {emp_result.data[0]['emp_name']}!")
+                        st.rerun()
+                    else:
+                        st.error("Employee profile not found")
                 else:
-                    st.error("Invalid Employee ID")
+                    st.error("Invalid Employee ID or Password")
             except Exception as e:
                 st.error(f"Login error: {str(e)}")
 
