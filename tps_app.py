@@ -4,6 +4,7 @@ from datetime import datetime
 from io import BytesIO
 import os
 import re
+import requests
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -25,6 +26,76 @@ try:
 except Exception as e:
     st.error(f"❌ Failed to connect to Supabase: {str(e)}")
     st.stop()
+
+# ── UltraMsg WhatsApp API Credentials ──
+# Set these in Streamlit Secrets (or .env for local)
+ULTRAMSG_INSTANCE_ID = st.secrets.get("ULTRAMSG_INSTANCE_ID", os.getenv("ULTRAMSG_INSTANCE_ID", ""))
+ULTRAMSG_TOKEN       = st.secrets.get("ULTRAMSG_TOKEN",       os.getenv("ULTRAMSG_TOKEN", ""))
+
+def send_whatsapp_notification(to_number: str, message: str) -> dict:
+    """
+    Send a WhatsApp text message via UltraMsg API.
+    to_number: Full number with country code, no + or spaces (e.g., 919876543210)
+    """
+    if not ULTRAMSG_INSTANCE_ID or not ULTRAMSG_TOKEN:
+        st.warning("⚠️ UltraMsg credentials not configured. WhatsApp notification skipped.")
+        return {"sent": False, "error": "Missing credentials"}
+
+    # Clean the number
+    to_number = str(to_number).strip().replace("+", "").replace(" ", "").replace("-", "")
+    
+    url = f"https://api.ultramsg.com/{ULTRAMSG_INSTANCE_ID}/messages/chat"
+    payload = {
+        "token": ULTRAMSG_TOKEN,
+        "to": to_number,
+        "body": message,
+        "priority": 10,
+    }
+    
+    try:
+        resp = requests.post(url, data=payload, timeout=15)
+        resp.raise_for_status()
+        return resp.json()  # e.g., {"sent":"true","message":"ok","id":12345}
+    except Exception as e:
+        st.warning(f"⚠️ WhatsApp send failed: {e}")
+        return {"sent": False, "error": str(e)}
+
+
+def get_tl_for_employee(emp_id: str):
+    """
+    Find the TL (including whatsapp_number) responsible for this employee's region.
+    Returns TL dict or None.
+    NOTE: Requires 'whatsapp_number' column in tl_users table.
+    """
+    try:
+        # 1. Get employee's region
+        emp_res = supabase.table("employees").select("region, emp_name").eq("emp_id", emp_id).execute()
+        if not emp_res.data:
+            return None
+        emp_region = emp_res.data[0].get("region")
+        emp_name   = emp_res.data[0].get("emp_name", emp_id)
+        
+        if not emp_region:
+            return None
+
+        # 2. Find TL for that region (try lowercase column first, then capitalized)
+        for col in ("region", "Region", "REGION"):
+            try:
+                tl_res = supabase.table("tl_users").select("tl_id, tl_name, whatsapp_number").eq(col, emp_region).execute()
+                if tl_res.data and len(tl_res.data) > 0:
+                    tl = tl_res.data[0]
+                    tl["employee_region"] = emp_region
+                    tl["employee_name"]   = emp_name
+                    return tl
+            except Exception as e:
+                if "does not exist" in str(e) or "42703" in str(e):
+                    continue
+                raise
+        return None
+    except Exception as e:
+        st.warning(f"Could not find TL for notification: {e}")
+        return None
+
 
 # Page configuration
 st.set_page_config(
@@ -472,6 +543,24 @@ def employee_dashboard():
                                 'status': 'Pending'
                             }
                             supabase.table("partner_requests").insert(request_data).execute()
+                            
+                            # ── 🔔 WhatsApp Notify TL ──
+                            tl_info = get_tl_for_employee(st.session_state.user_id)
+                            if tl_info and tl_info.get("whatsapp_number"):
+                                msg = (
+                                    f"📢 *New Partner Request*\n\n"
+                                    f"👤 Employee: *{emp_data['emp_name']}* ({st.session_state.user_id})\n"
+                                    f"🏢 Region: *{tl_info.get('employee_region', '-')}*\n\n"
+                                    f"🆕 Partner: *{new_partner_name}*\n"
+                                    f"📋 GST: `{new_gst.strip().upper()}`\n"
+                                    f"📍 City/State: {new_city or '-'} / {new_state or '-'}\n"
+                                    f"📝 Reason: {reason}\n\n"
+                                    f"⏳ Status: *Pending Approval*\n"
+                                    f"🔗 Please review in the TL Dashboard."
+                                )
+                                send_whatsapp_notification(tl_info["whatsapp_number"], msg)
+                            # ───────────────────────────
+                            
                             st.success("✅ Request submitted successfully! Waiting for TL approval.")
                             get_all_partners_df.clear()
                         except Exception as e:
@@ -539,6 +628,23 @@ def employee_dashboard():
                                 'status': 'Pending'
                             }
                             supabase.table("counter_removal_requests").insert(removal_request_data).execute()
+                            
+                            # ── 🔔 WhatsApp Notify TL ──
+                            tl_info = get_tl_for_employee(st.session_state.user_id)
+                            if tl_info and tl_info.get("whatsapp_number"):
+                                msg = (
+                                    f"🗑️ *Counter Removal Request*\n\n"
+                                    f"👤 Employee: *{emp_data['emp_name']}* ({st.session_state.user_id})\n"
+                                    f"🏢 Region: *{tl_info.get('employee_region', '-')}*\n\n"
+                                    f"🏬 Counter: *{selected_partner['partner_name']}*\n"
+                                    f"📋 GST: `{selected_partner['gst_number']}`\n"
+                                    f"📝 Reason: {removal_reason}\n\n"
+                                    f"⏳ Status: *Pending Approval*\n"
+                                    f"🔗 Please review in the TL Dashboard."
+                                )
+                                send_whatsapp_notification(tl_info["whatsapp_number"], msg)
+                            # ───────────────────────────
+                            
                             st.success("✅ Removal request submitted! Waiting for TL approval.")
                             get_all_partners_df.clear()
                         except Exception as e:
