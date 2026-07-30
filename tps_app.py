@@ -29,8 +29,8 @@ except Exception as e:
 
 # ── UltraMsg WhatsApp API Credentials ──
 # Set these in Streamlit Secrets (or .env for local)
-ULTRAMSG_INSTANCE_ID = st.secrets.get("ULTRAMSG_INSTANCE_ID", os.getenv("ULTRAMSG_INSTANCE_ID", ""))
-ULTRAMSG_TOKEN       = st.secrets.get("ULTRAMSG_TOKEN",       os.getenv("ULTRAMSG_TOKEN", ""))
+ULTRAMSG_INSTANCE_ID = "instance186843"
+ULTRAMSG_TOKEN       = "ckaglr8uezzfvg49"
 
 def send_whatsapp_notification(to_number: str, message: str) -> dict:
     """
