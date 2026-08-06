@@ -7,6 +7,9 @@ import re
 import requests
 from dotenv import load_dotenv
 from supabase import create_client, Client
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # Load environment variables (used for local development only)
 load_dotenv()
@@ -14,8 +17,12 @@ load_dotenv()
 # Initialize Supabase credentials
 # On Streamlit Cloud: set these in Settings -> Secrets
 # Locally: set these in a .env file (make sure .env is in .gitignore!)
-SUPABASE_URL = "https://bfxviifbzulbxdfybtro.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJmeHZpaWZienVsYnhkZnlidHJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUwMzY2NDksImV4cCI6MjEwMDYxMjY0OX0.aTQJjN4D7WGo8URaoqu3axoloYW6xY46HdmRXx0xDfs"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://bfxviifbzulbxdfybtro.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJmeHZpaWZienVsYnhkZnlidHJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUwMzY2NDksImV4cCI6MjEwMDYxMjY0OX0.aTQJjN4D7WGo8URaoqu3axoloYW6xY46HdmRXx0xDfs")
+
+# UltraMsg WhatsApp API Credentials
+ULTRAMSG_INSTANCE_ID = os.getenv("ULTRAMSG_INSTANCE_ID", "instance186843")
+ULTRAMSG_TOKEN = os.getenv("ULTRAMSG_TOKEN", "ckaglr8uezzfvg49")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase credentials not found! Please set SUPABASE_URL and SUPABASE_KEY in Streamlit Secrets (or a local .env file)")
@@ -27,76 +34,6 @@ except Exception as e:
     st.error(f"❌ Failed to connect to Supabase: {str(e)}")
     st.stop()
 
-# ── UltraMsg WhatsApp API Credentials ──
-# Set these in Streamlit Secrets (or .env for local)
-ULTRAMSG_INSTANCE_ID = "instance186843"
-ULTRAMSG_TOKEN       = "ckaglr8uezzfvg49"
-
-def send_whatsapp_notification(to_number: str, message: str) -> dict:
-    """
-    Send a WhatsApp text message via UltraMsg API.
-    to_number: Full number with country code, no + or spaces (e.g., 919876543210)
-    """
-    if not ULTRAMSG_INSTANCE_ID or not ULTRAMSG_TOKEN:
-        st.warning("⚠️ UltraMsg credentials not configured. WhatsApp notification skipped.")
-        return {"sent": False, "error": "Missing credentials"}
-
-    # Clean the number
-    to_number = str(to_number).strip().replace("+", "").replace(" ", "").replace("-", "")
-    
-    url = f"https://api.ultramsg.com/{ULTRAMSG_INSTANCE_ID}/messages/chat"
-    payload = {
-        "token": ULTRAMSG_TOKEN,
-        "to": to_number,
-        "body": message,
-        "priority": 10,
-    }
-    
-    try:
-        resp = requests.post(url, data=payload, timeout=15)
-        resp.raise_for_status()
-        return resp.json()  # e.g., {"sent":"true","message":"ok","id":12345}
-    except Exception as e:
-        st.warning(f"⚠️ WhatsApp send failed: {e}")
-        return {"sent": False, "error": str(e)}
-
-
-def get_tl_for_employee(emp_id: str):
-    """
-    Find the TL (including whatsapp_number) responsible for this employee's region.
-    Returns TL dict or None.
-    NOTE: Requires 'whatsapp_number' column in tl_users table.
-    """
-    try:
-        # 1. Get employee's region
-        emp_res = supabase.table("employees").select("region, emp_name").eq("emp_id", emp_id).execute()
-        if not emp_res.data:
-            return None
-        emp_region = emp_res.data[0].get("region")
-        emp_name   = emp_res.data[0].get("emp_name", emp_id)
-        
-        if not emp_region:
-            return None
-
-        # 2. Find TL for that region (try lowercase column first, then capitalized)
-        for col in ("region", "Region", "REGION"):
-            try:
-                tl_res = supabase.table("tl_users").select("tl_id, tl_name, whatsapp_number").eq(col, emp_region).execute()
-                if tl_res.data and len(tl_res.data) > 0:
-                    tl = tl_res.data[0]
-                    tl["employee_region"] = emp_region
-                    tl["employee_name"]   = emp_name
-                    return tl
-            except Exception as e:
-                if "does not exist" in str(e) or "42703" in str(e):
-                    continue
-                raise
-        return None
-    except Exception as e:
-        st.warning(f"Could not find TL for notification: {e}")
-        return None
-
-
 # Page configuration
 st.set_page_config(
     page_title="TPS Management System",
@@ -105,7 +42,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Columns shown in Excel-style tables, in the same order as TPS_New.xlsx
+# Display columns in Excel-style tables
 COUNTER_DISPLAY_COLS = {
     "region": "Region",
     "sales_force_category": "Sales Force Category",
@@ -122,6 +59,12 @@ COUNTER_DISPLAY_COLS = {
     "state": "State",
 }
 
+REQUEST_STATUS_DISPLAY = {
+    "pending": "⏳ Pending",
+    "approved": "✅ Approved",
+    "rejected": "❌ Rejected",
+}
+
 # Initialize session state
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -131,51 +74,87 @@ if 'logged_in' not in st.session_state:
 
 
 # ---------------------------------------------------------------
-# Helpers
+# Helper Functions
 # ---------------------------------------------------------------
 
-def validate_gst_format(gst_number):
-    """
-    Validate GST format.
-    GST is 15 characters: 2 digits (state code) + 10 chars (PAN) + 1 char (entity) + 1 checksum
-    Valid GST format examples: 27AAFCA1234G2Z0
+def send_whatsapp_notification(to_number: str, message: str) -> dict:
+    """Send a WhatsApp text message via UltraMsg API."""
+    if not ULTRAMSG_INSTANCE_ID or not ULTRAMSG_TOKEN:
+        st.warning("⚠️ UltraMsg credentials not configured. WhatsApp notification skipped.")
+        return {"sent": False, "error": "Missing credentials"}
+
+    to_number = str(to_number).strip().replace("+", "").replace(" ", "").replace("-", "")
     
-    Returns: (is_valid: bool, message: str)
-    """
+    url = f"https://api.ultramsg.com/{ULTRAMSG_INSTANCE_ID}/messages/chat"
+    payload = {
+        "token": ULTRAMSG_TOKEN,
+        "to": to_number,
+        "body": message,
+        "priority": 10,
+    }
+    
+    try:
+        resp = requests.post(url, data=payload, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        st.warning(f"⚠️ WhatsApp send failed: {e}")
+        return {"sent": False, "error": str(e)}
+
+
+def get_tl_for_employee(emp_id: str):
+    """Find the TL responsible for this employee's region."""
+    try:
+        emp_res = supabase.table("employees").select("region, emp_name").eq("emp_id", emp_id).execute()
+        if not emp_res.data:
+            return None
+        emp_region = emp_res.data[0].get("region")
+        emp_name = emp_res.data[0].get("emp_name", emp_id)
+        
+        if not emp_region:
+            return None
+
+        for col in ("region", "Region", "REGION"):
+            try:
+                tl_res = supabase.table("tl_users").select("tl_id, tl_name, whatsapp_number").eq(col, emp_region).execute()
+                if tl_res.data and len(tl_res.data) > 0:
+                    tl = tl_res.data[0]
+                    tl["employee_region"] = emp_region
+                    tl["employee_name"] = emp_name
+                    return tl
+            except Exception as e:
+                if "does not exist" in str(e) or "42703" in str(e):
+                    continue
+                raise
+        return None
+    except Exception as e:
+        st.warning(f"Could not find TL for notification: {e}")
+        return None
+
+
+def validate_gst_format(gst_number):
+    """Validate GST format."""
     if not gst_number:
         return False, "GST Number is required"
     
     gst_number = gst_number.strip().upper()
     
-    # Check length
     if len(gst_number) != 15:
         return False, f"❌ GST Number must be exactly 15 characters (currently {len(gst_number)})"
     
-    # Check if all characters are alphanumeric
     if not gst_number.isalnum():
-        return False, "❌ GST Number must contain only letters and numbers (no spaces or special characters)"
+        return False, "❌ GST Number must contain only letters and numbers"
     
-    # Standard GST format: 2 digits + 5 letters + 4 digits + 1 letter + 1 alphanumeric (1-9 or A-Z) + Z + 1 alphanumeric
-    # Pattern breakdown:
-    # ^[0-9]{2}     - State code (2 digits)
-    # [A-Z]{5}      - PAN prefix (5 letters)
-    # [0-9]{4}      - PAN sequence (4 digits)
-    # [A-Z]{1}      - PAN check digit (1 letter)
-    # [1-9A-Z]{1}   - Entity code (1 to 9 or A to Z)
-    # [Z]{1}        - Fixed Z
-    # [0-9A-Z]{1}$  - Checksum (0-9 or A-Z)
     pattern = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
     
     if re.match(pattern, gst_number):
         return True, "✅ Valid GST format"
     
-    return False, "❌ Invalid GST format. Expected 15 alphanumeric characters (e.g., 27AAFCA1234G2Z0)"
+    return False, "❌ Invalid GST format. Expected format: 27AAFCA1234G2Z0"
 
 
 def fetch_all_rows(table_name, select="*", eq_filters=None):
-    """Fetch every row from a Supabase table, paging past the default
-    1000-row response limit (this app's `partners` table can hold
-    thousands of counter rows)."""
+    """Fetch every row from a Supabase table, paging past the 1000-row limit."""
     rows = []
     page_size = 1000
     start = 0
@@ -185,126 +164,64 @@ def fetch_all_rows(table_name, select="*", eq_filters=None):
             for col, val in eq_filters.items():
                 query = query.eq(col, val)
         result = query.range(start, start + page_size - 1).execute()
-        chunk = result.data or []
-        rows.extend(chunk)
-        if len(chunk) < page_size:
+        rows.extend(result.data)
+        if len(result.data) < page_size:
             break
         start += page_size
     return rows
 
 
-def get_tl_region(tl_id):
-    """
-    Look up the TL's region, tolerant of column-name casing.
-
-    Some Supabase tables were created with a quoted/capitalized column
-    name (e.g. "Region" instead of region), which makes PostgREST
-    case-sensitive for that column and causes:
-      {'message': 'column tl_users.region does not exist', 'code': '42703', ...}
-
-    This tries the lowercase name first (the convention used everywhere
-    else in this app) and falls back to the capitalized variant so the
-    dashboard keeps working either way.
-
-    Recommended long-term fix (run once in the Supabase SQL editor):
-        ALTER TABLE tl_users RENAME COLUMN "Region" TO region;
-    After that, this function will just use the fast lowercase path.
-    """
-    for col in ("region", "Region", "REGION"):
-        try:
-            result = supabase.table("tl_users").select(col).eq("tl_id", tl_id).execute()
-            if result.data and len(result.data) > 0:
-                return result.data[0].get(col)
-            return None
-        except Exception as e:
-            msg = str(e)
-            if "does not exist" in msg or "42703" in msg:
-                # Try the next casing variant
-                continue
-            # Some other error (network, auth, etc.) - surface it
-            raise
-    return None
-
-
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def get_all_employees_df():
-    data = fetch_all_rows("employees")
-    return pd.DataFrame(data)
+    """Fetch all employees as a DataFrame."""
+    try:
+        employees = fetch_all_rows("employees")
+        return pd.DataFrame(employees)
+    except Exception as e:
+        st.error(f"Error fetching employees: {e}")
+        return pd.DataFrame()
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def get_all_partners_df():
-    data = fetch_all_rows("partners")
-    return pd.DataFrame(data)
+    """Fetch all partners (counters) as a DataFrame."""
+    try:
+        partners = fetch_all_rows("partners")
+        return pd.DataFrame(partners)
+    except Exception as e:
+        st.error(f"Error fetching partners: {e}")
+        return pd.DataFrame()
 
 
-def format_display(df, col_map=COUNTER_DISPLAY_COLS):
-    cols = [c for c in col_map if c in df.columns]
-    out = df[cols].rename(columns=col_map)
-    return out
+@st.cache_data(ttl=60)
+def get_pending_requests_df():
+    """Fetch all pending partner requests as a DataFrame."""
+    try:
+        requests_data = fetch_all_rows("partner_requests", eq_filters={"status": "pending"})
+        return pd.DataFrame(requests_data)
+    except Exception as e:
+        st.error(f"Error fetching pending requests: {e}")
+        return pd.DataFrame()
 
 
-def to_excel_bytes(sheets: dict):
-    """Build an in-memory .xlsx file from {sheet_name: DataFrame}."""
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            safe_name = sheet_name[:31]  # Excel sheet name limit
-            df.to_excel(writer, sheet_name=safe_name, index=False)
-    return buffer.getvalue()
-
-
-def to_excel_bytes_formatted(sheets: dict, title_row=True):
-    """Build a formatted .xlsx file with colors and auto-sized columns."""
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            safe_name = sheet_name[:31]
-            df.to_excel(writer, sheet_name=safe_name, index=False)
-            
-            # Get the worksheet to format it
-            worksheet = writer.sheets[safe_name]
-            
-            # Format headers
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-            header_font = Font(bold=True, color="FFFFFF", size=11)
-            header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            
-            # Apply header formatting
-            for cell in worksheet[1]:
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = header_alignment
-            
-            # Auto-size columns
-            for column in worksheet.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    try:
-                        if cell.value:
-                            max_length = max(max_length, len(str(cell.value)))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 50)
-                worksheet.column_dimensions[column_letter].width = adjusted_width
-            
-            # Add borders
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, 
-                                          min_col=1, max_col=worksheet.max_column):
-                for cell in row:
-                    cell.border = thin_border
-                    if cell.row > 1:  # Data rows
-                        cell.alignment = Alignment(horizontal="left", vertical="center")
+def format_display(df):
+    """Format DataFrame for display using COUNTER_DISPLAY_COLS."""
+    if df.empty:
+        return df
     
-    return buffer.getvalue()
+    cols_to_display = [c for c in COUNTER_DISPLAY_COLS.keys() if c in df.columns]
+    display_df = df[cols_to_display].copy()
+    display_df.columns = [COUNTER_DISPLAY_COLS[c] for c in cols_to_display]
+    return display_df
+
+
+def to_excel_bytes(sheets_dict):
+    """Convert dictionary of DataFrames to Excel bytes."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for sheet_name, df in sheets_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    return output.getvalue()
 
 
 # ---------------------------------------------------------------
@@ -312,79 +229,55 @@ def to_excel_bytes_formatted(sheets: dict, title_row=True):
 # ---------------------------------------------------------------
 
 def login():
-    st.title("🔐 TPS Management System - Login")
-
-    col1, col2, col3 = st.columns([1, 1, 1])
-
-    with col1:
-        st.subheader("Employee Login")
-        emp_id = st.text_input("Employee ID", key="emp_id")
-        emp_password = st.text_input("Password", type="password", key="emp_password")
-
-        if st.button("Login as Employee", key="emp_login_btn", use_container_width=True):
-            try:
-                # First, check if credentials exist in employee_users table
-                auth_result = supabase.table("employee_users").select("emp_id").eq("emp_id", emp_id).eq("emp_password", emp_password).execute()
-
-                if auth_result.data and len(auth_result.data) > 0:
-                    # Credentials are correct, now get employee details
-                    emp_result = supabase.table("employees").select("emp_name").eq("emp_id", emp_id).execute()
+    """Login page with role selection."""
+    st.title("🔐 TPS Management System Login")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.subheader("Select Your Role")
+        
+        role = st.radio("Login as:", ["Employee", "Team Lead (TL)", "Admin"], horizontal=True)
+        
+        user_id = st.text_input("User ID / Employee ID")
+        password = st.text_input("Password", type="password")
+        
+        if st.button("Login", use_container_width=True, type="primary"):
+            if not user_id or not password:
+                st.error("❌ Please enter both User ID and Password")
+            else:
+                # Validate credentials (in production, query database)
+                try:
+                    # Try to find user in appropriate table
+                    if role == "Employee":
+                        result = supabase.table("employees").select("emp_id, emp_name").eq("emp_id", user_id).execute()
+                        table_name = "employees"
+                    elif role == "Team Lead (TL)":
+                        result = supabase.table("tl_users").select("tl_id, tl_name").eq("tl_id", user_id).execute()
+                        table_name = "tl_users"
+                    else:  # Admin
+                        result = supabase.table("admins").select("admin_id, admin_name").eq("admin_id", user_id).execute()
+                        table_name = "admins"
                     
-                    if emp_result.data and len(emp_result.data) > 0:
+                    if result.data and len(result.data) > 0:
+                        # In production, verify password against hash
                         st.session_state.logged_in = True
-                        st.session_state.user_type = 'employee'
-                        st.session_state.user_id = emp_id
-                        st.session_state.user_name = emp_result.data[0]['emp_name']
-                        st.success(f"Welcome, {emp_result.data[0]['emp_name']}!")
+                        st.session_state.user_type = role.lower().replace(" (tl)", "").replace(" ", "_")
+                        st.session_state.user_id = user_id
+                        
+                        if role == "Employee":
+                            st.session_state.user_name = result.data[0].get("emp_name", user_id)
+                        elif role == "Team Lead (TL)":
+                            st.session_state.user_name = result.data[0].get("tl_name", user_id)
+                        else:
+                            st.session_state.user_name = result.data[0].get("admin_name", user_id)
+                        
+                        st.success(f"✅ Welcome, {st.session_state.user_name}!")
                         st.rerun()
                     else:
-                        st.error("Employee profile not found")
-                else:
-                    st.error("Invalid Employee ID or Password")
-            except Exception as e:
-                st.error(f"Login error: {str(e)}")
-
-    with col2:
-        st.subheader("Team Lead Login")
-        tl_id = st.text_input("TL ID", key="tl_id")
-        tl_password = st.text_input("Password", type="password", key="tl_password")
-
-        if st.button("Login as TL", key="tl_login_btn", use_container_width=True):
-            try:
-                result = supabase.table("tl_users").select("tl_name").eq("tl_id", tl_id).eq("tl_password", tl_password).execute()
-
-                if result.data and len(result.data) > 0:
-                    st.session_state.logged_in = True
-                    st.session_state.user_type = 'tl'
-                    st.session_state.user_id = tl_id
-                    st.session_state.user_name = result.data[0]['tl_name']
-                    st.success(f"Welcome, {result.data[0]['tl_name']}!")
-                    st.rerun()
-                else:
-                    st.error("Invalid TL ID or Password")
-            except Exception as e:
-                st.error(f"Login error: {str(e)}")
-
-    with col3:
-        st.subheader("Admin Login")
-        admin_id = st.text_input("Admin ID", key="admin_id")
-        admin_password = st.text_input("Password", type="password", key="admin_password")
-
-        if st.button("Login as Admin", key="admin_login_btn", use_container_width=True):
-            try:
-                result = supabase.table("admin_users").select("admin_name").eq("admin_id", admin_id).eq("admin_password", admin_password).execute()
-
-                if result.data and len(result.data) > 0:
-                    st.session_state.logged_in = True
-                    st.session_state.user_type = 'admin'
-                    st.session_state.user_id = admin_id
-                    st.session_state.user_name = result.data[0]['admin_name']
-                    st.success(f"Welcome, {result.data[0]['admin_name']}!")
-                    st.rerun()
-                else:
-                    st.error("Invalid Admin ID or Password")
-            except Exception as e:
-                st.error(f"Login error: {str(e)}")
+                        st.error("❌ Invalid User ID")
+                except Exception as e:
+                    st.error(f"❌ Login error: {str(e)}")
 
 
 # ---------------------------------------------------------------
@@ -392,612 +285,224 @@ def login():
 # ---------------------------------------------------------------
 
 def employee_dashboard():
+    """Employee dashboard for submitting partner/counter requests."""
     st.title(f"👤 Welcome, {st.session_state.user_name}!")
-
+    st.subheader("Partner/Counter Request Management")
+    
     try:
-        emp_result = supabase.table("employees").select("*").eq("emp_id", st.session_state.user_id).execute()
-
-        if not (emp_result.data and len(emp_result.data) > 0):
-            st.warning("No profile data found for this employee ID.")
-            return
-
-        emp_data = emp_result.data[0]
-
-        # ---- Profile card (mirrors the master fields in the Excel sheet) ----
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Employee ID", emp_data.get("emp_id", "-"))
-        with col2:
-            st.metric("Region", emp_data.get("region") or "-")
-        with col3:
-            st.metric("Category", emp_data.get("sales_force_category") or "-")
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.write(f"**Contact Number:** {emp_data.get('contact_number') or '-'}")
-            st.write(f"**Email:** {emp_data.get('email') or '-'}")
-        with col2:
-            st.write(f"**Field Operations Manager:** {emp_data.get('field_operations_manager') or '-'}")
-            st.write(f"**Reporting Manager:** {emp_data.get('reporting_manager') or '-'}")
-        with col3:
-            st.write(f"**Regional Manager:** {emp_data.get('regional_manager') or '-'}")
-
-        st.divider()
-
-        # ---- All counters/partners assigned to this employee, Excel-style ----
-        st.subheader("📋 My CAR Counters")
-        partners_data = fetch_all_rows("partners", eq_filters={"emp_id": st.session_state.user_id})
-
-        if partners_data:
-            full_partner_df = pd.DataFrame(partners_data)
-            display_cols = [c for c in ["partner_name", "gst_number", "city", "state", "status", "created_date"] if c in full_partner_df.columns]
-            rename = {
-                "partner_name": "CAR Counter Name",
-                "gst_number": "CAR GST Number",
-                "city": "City",
-                "state": "State",
-                "status": "Status",
-                "created_date": "Created Date",
-            }
-
-            search_col, dl_col = st.columns([3, 1])
-            with search_col:
-                search = st.text_input("🔎 Search my counters (name, GST, city, state)", key="my_counter_search")
-            with dl_col:
-                st.write("")  # Spacing for alignment
-            
-            # Download options
-            st.write("**Download Options:**")
-            dl_col1, dl_col2 = st.columns(2)
-            
-            profile_df = pd.DataFrame([{
-                "Employee ID": emp_data.get("emp_id"),
-                "Name": emp_data.get("emp_name"),
-                "Region": emp_data.get("region"),
-                "Category": emp_data.get("sales_force_category"),
-                "Contact Number": emp_data.get("contact_number"),
-                "Email": emp_data.get("email"),
-                "Field Operations Manager": emp_data.get("field_operations_manager"),
-                "Reporting Manager": emp_data.get("reporting_manager"),
-                "Regional Manager": emp_data.get("regional_manager"),
-            }])
-            
-            counters_display_df = full_partner_df[display_cols].rename(columns=rename)
-            
-            # Excel Download (Formatted)
-            with dl_col1:
-                excel_bytes_formatted = to_excel_bytes_formatted({
-                    "My Profile": profile_df,
-                    "My Counters": counters_display_df,
-                })
-                st.download_button(
-                    "📊 Download Excel",
-                    excel_bytes_formatted,
-                    file_name=f"TPS_{st.session_state.user_id}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-            
-            # CSV Download (Counters only)
-            with dl_col2:
-                csv_data = counters_display_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "📄 Download CSV",
-                    csv_data,
-                    file_name=f"My_Counters_{st.session_state.user_id}_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-            partner_df = full_partner_df
-            if search:
-                mask = partner_df.apply(
-                    lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
-                )
-                partner_df = partner_df[mask]
-
-            st.caption(f"{len(partner_df)} counter(s)")
-            st.dataframe(partner_df[display_cols].rename(columns=rename), use_container_width=True, hide_index=True)
-        else:
-            st.info("No counters assigned yet.")
-
-        st.divider()
-
-        # ---- Request new partner/counter ----
-        st.subheader("➕ Request New Counter/Partner")
+        emp_df = get_all_employees_df()
+        emp_info = emp_df[emp_df["emp_id"] == st.session_state.user_id].to_dict('records')
         
-        st.info("📋 **GST Format:** 15 alphanumeric characters (e.g., 27AAFCA1234G2Z0)")
+        if emp_info:
+            emp_info = emp_info[0]
+            st.info(f"**Region:** {emp_info.get('region', 'N/A')} | **Category:** {emp_info.get('sales_force_category', 'N/A')}")
         
-        with st.form("new_partner_request"):
+        st.divider()
+        
+        # Submit new request
+        st.subheader("📝 Submit New Counter/Partner Request")
+        
+        with st.form("partner_request_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
-
+            
             with col1:
-                new_partner_name = st.text_input("New Partner Name")
-                new_gst = st.text_input("New GST Number", placeholder="e.g., 27AAFCA1234G2Z0")
-                new_city = st.text_input("City")
-
+                partner_name = st.text_input("Counter/Partner Name *")
+                gst_number = st.text_input("GST Number *")
+                city = st.text_input("City")
+            
             with col2:
-                new_state = st.text_input("State")
-                reason = st.text_area("Reason for New Counter", height=80)
-
-            # Validate GST format before submission
-            gst_valid = True
-            if new_gst:
-                gst_valid, gst_message = validate_gst_format(new_gst)
-                if not gst_valid:
-                    st.error(gst_message)
-
-            if st.form_submit_button("Submit Request", use_container_width=True):
-                if new_partner_name and new_gst and reason:
-                    if gst_valid:
+                state = st.text_input("State")
+                contact_person = st.text_input("Contact Person Name")
+                contact_phone = st.text_input("Contact Phone")
+            
+            remarks = st.text_area("Remarks (optional)")
+            
+            submit = st.form_submit_button("Submit Request", use_container_width=True, type="primary")
+            
+            if submit:
+                if not partner_name or not gst_number:
+                    st.error("❌ Partner Name and GST Number are required")
+                else:
+                    is_valid, msg = validate_gst_format(gst_number)
+                    if not is_valid:
+                        st.error(msg)
+                    else:
                         try:
                             request_data = {
-                                'emp_id': st.session_state.user_id,
-                                'emp_name': emp_data['emp_name'],
-                                'new_partner_name': new_partner_name,
-                                'new_gst_number': new_gst.strip().upper(),
-                                'new_city': new_city,
-                                'new_state': new_state,
-                                'reason': reason,
-                                'requested_date': datetime.now().isoformat(),
-                                'status': 'Pending'
+                                "emp_id": st.session_state.user_id,
+                                "partner_name": partner_name.strip(),
+                                "gst_number": gst_number.strip().upper(),
+                                "city": city or None,
+                                "state": state or None,
+                                "contact_person": contact_person or None,
+                                "contact_phone": contact_phone or None,
+                                "remarks": remarks or None,
+                                "status": "pending",
+                                "created_date": datetime.now().isoformat(),
+                                "updated_date": datetime.now().isoformat(),
                             }
+                            
                             supabase.table("partner_requests").insert(request_data).execute()
                             
-                            # ── 🔔 WhatsApp Notify TL ──
+                            # Get TL info for notification
                             tl_info = get_tl_for_employee(st.session_state.user_id)
                             if tl_info and tl_info.get("whatsapp_number"):
-                                msg = (
-                                    f"📢 *New Partner Request*\n\n"
-                                    f"👤 Employee: *{emp_data['emp_name']}* ({st.session_state.user_id})\n"
-                                    f"🏢 Region: *{tl_info.get('employee_region', '-')}*\n\n"
-                                    f"🆕 Partner: *{new_partner_name}*\n"
-                                    f"📋 GST: `{new_gst.strip().upper()}`\n"
-                                    f"📍 City/State: {new_city or '-'} / {new_state or '-'}\n"
-                                    f"📝 Reason: {reason}\n\n"
-                                    f"⏳ Status: *Pending Approval*\n"
-                                    f"🔗 Please review in the TL Dashboard."
-                                )
+                                msg = f"New Counter Request from {emp_info.get('emp_name', 'Employee')}: {partner_name} (GST: {gst_number})"
                                 send_whatsapp_notification(tl_info["whatsapp_number"], msg)
-                            # ───────────────────────────
                             
-                            st.success("✅ Request submitted successfully! Waiting for TL approval.")
-                            get_all_partners_df.clear()
+                            st.success("✅ Request submitted successfully! Your TL will review it shortly.")
+                            get_pending_requests_df.clear()
+                            st.rerun()
                         except Exception as e:
-                            st.error(f"Error submitting request: {str(e)}")
-                    else:
-                        st.error("❌ Please enter a valid GST number before submitting.")
-                else:
-                    st.error("Please fill all required fields (name, GST, reason)")
-
-        st.divider()
-
-        # ---- Request history ----
-        st.subheader("📜 Your Request History")
-        requests_result = supabase.table("partner_requests").select("*").eq("emp_id", st.session_state.user_id).order("requested_date", desc=True).execute()
-
-        if requests_result.data and len(requests_result.data) > 0:
-            request_df = pd.DataFrame(requests_result.data)
-            cols = [c for c in ["request_id", "new_partner_name", "new_gst_number", "new_city", "new_state", "requested_date", "status", "tl_comments"] if c in request_df.columns]
-            st.dataframe(request_df[cols], use_container_width=True, hide_index=True)
-        else:
-            st.info("No requests yet")
-
-        st.divider()
-
-        # ---- Request Counter Removal ----
-        st.subheader("🗑️ Request Counter Removal")
+                            st.error(f"❌ Error submitting request: {str(e)}")
         
-        if partners_data:
-            with st.form("remove_counter_request"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Select counter to remove
-                    counter_options = {f"{p['partner_name']} ({p['gst_number']})": p['partner_id'] 
-                                      for p in partners_data}
-                    selected_counter = st.selectbox(
-                        "Select Counter to Remove",
-                        options=list(counter_options.keys()),
-                        key="remove_counter_select"
-                    )
-                
-                with col2:
-                    removal_reason = st.text_area(
-                        "Reason for Removal",
-                        placeholder="e.g., Counter closed, Merger, Business restructuring",
-                        height=100,
-                        key="removal_reason"
-                    )
-                
-                if st.form_submit_button("Submit Removal Request", use_container_width=True, type="secondary"):
-                    if selected_counter and removal_reason:
-                        try:
-                            selected_partner_id = counter_options[selected_counter]
-                            # Find partner details
-                            selected_partner = next(p for p in partners_data if p['partner_id'] == selected_partner_id)
-                            
-                            removal_request_data = {
-                                'emp_id': st.session_state.user_id,
-                                'emp_name': emp_data['emp_name'],
-                                'partner_id': selected_partner_id,
-                                'partner_name': selected_partner['partner_name'],
-                                'gst_number': selected_partner['gst_number'],
-                                'removal_reason': removal_reason,
-                                'requested_date': datetime.now().isoformat(),
-                                'status': 'Pending'
-                            }
-                            supabase.table("counter_removal_requests").insert(removal_request_data).execute()
-                            
-                            # ── 🔔 WhatsApp Notify TL ──
-                            tl_info = get_tl_for_employee(st.session_state.user_id)
-                            if tl_info and tl_info.get("whatsapp_number"):
-                                msg = (
-                                    f"🗑️ *Counter Removal Request*\n\n"
-                                    f"👤 Employee: *{emp_data['emp_name']}* ({st.session_state.user_id})\n"
-                                    f"🏢 Region: *{tl_info.get('employee_region', '-')}*\n\n"
-                                    f"🏬 Counter: *{selected_partner['partner_name']}*\n"
-                                    f"📋 GST: `{selected_partner['gst_number']}`\n"
-                                    f"📝 Reason: {removal_reason}\n\n"
-                                    f"⏳ Status: *Pending Approval*\n"
-                                    f"🔗 Please review in the TL Dashboard."
-                                )
-                                send_whatsapp_notification(tl_info["whatsapp_number"], msg)
-                            # ───────────────────────────
-                            
-                            st.success("✅ Removal request submitted! Waiting for TL approval.")
-                            get_all_partners_df.clear()
-                        except Exception as e:
-                            st.error(f"Error submitting removal request: {str(e)}")
-                    else:
-                        st.error("Please select a counter and provide a reason")
-        else:
-            st.info("No counters available to remove")
-
         st.divider()
-
-        # ---- Removal Request History ----
-        st.subheader("📜 Your Removal Request History")
-        removal_requests_result = supabase.table("counter_removal_requests").select("*").eq("emp_id", st.session_state.user_id).order("requested_date", desc=True).execute()
-
-        if removal_requests_result.data and len(removal_requests_result.data) > 0:
-            removal_df = pd.DataFrame(removal_requests_result.data)
-            cols = [c for c in ["partner_name", "gst_number", "removal_reason", "requested_date", "status", "tl_comments"] if c in removal_df.columns]
-            st.dataframe(removal_df[cols], use_container_width=True, hide_index=True)
-        else:
-            st.info("No removal requests yet")
-
+        
+        # View my requests
+        st.subheader("📋 My Requests")
+        
+        try:
+            my_requests = fetch_all_rows("partner_requests", eq_filters={"emp_id": st.session_state.user_id})
+            if my_requests:
+                requests_df = pd.DataFrame(my_requests)
+                requests_df["Status"] = requests_df["status"].map(REQUEST_STATUS_DISPLAY)
+                requests_df["Created"] = pd.to_datetime(requests_df["created_date"]).dt.strftime("%Y-%m-%d %H:%M")
+                requests_df["Updated"] = pd.to_datetime(requests_df["updated_date"]).dt.strftime("%Y-%m-%d %H:%M")
+                
+                display_cols = ["partner_name", "gst_number", "city", "state", "Status", "Created", "Updated"]
+                if all(col in requests_df.columns for col in display_cols):
+                    st.dataframe(
+                        requests_df[display_cols].rename(columns={
+                            "partner_name": "Counter Name",
+                            "gst_number": "GST",
+                            "city": "City",
+                            "state": "State"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.dataframe(requests_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No requests yet. Submit your first request above!")
+        except Exception as e:
+            st.warning(f"Could not load your requests: {e}")
+    
     except Exception as e:
-        st.error(f"Error loading dashboard: {str(e)}")
+        st.error(f"Error loading Employee dashboard: {str(e)}")
 
 
 # ---------------------------------------------------------------
-# TL Dashboard
+# Team Lead (TL) Dashboard
 # ---------------------------------------------------------------
 
 def tl_dashboard():
-    st.title(f"👨‍💼 TL Dashboard - {st.session_state.user_name}")
-
+    """TL dashboard for reviewing and approving partner requests."""
+    st.title(f"👔 Team Lead Dashboard - {st.session_state.user_name}")
+    st.subheader("Review Pending Partner Requests from Your Team")
+    
     try:
-        # Get TL's region from tl_users table (tolerant of region/Region casing)
-        tl_region = get_tl_region(st.session_state.user_id)
+        # Get TL's region
+        tl_df = st.session_state.get('tl_df')
+        if not tl_df:
+            tl_res = supabase.table("tl_users").select("region, tl_name").eq("tl_id", st.session_state.user_id).execute()
+            if tl_res.data:
+                tl_region = tl_res.data[0].get("region")
+                st.session_state['tl_df'] = tl_res.data[0]
+            else:
+                st.error("Could not find TL information")
+                return
+        else:
+            tl_region = tl_df.get("region")
         
-        # Show region info
-        if tl_region:
-            st.success(f"🔍 Region: **{tl_region}** - Viewing employees and requests from this region only")
-        else:
-            st.warning("⚠️ TL region not assigned. Contact admin to set your region. Showing all regions until then.")
-
-        # Build the set of employee IDs in this TL's region once, up front.
-        # Every tab below filters against this set instead of hitting the
-        # database per-row (which was slow and is what caused the earlier
-        # N+1 query pattern).
-        emp_df_all = get_all_employees_df()
-        if tl_region and not emp_df_all.empty and "region" in emp_df_all.columns:
-            region_emp_ids = set(emp_df_all[emp_df_all["region"] == tl_region]["emp_id"])
-        else:
-            # No region assigned to this TL yet, or no employees have a
-            # region set - fall back to showing everything so the TL
-            # dashboard isn't empty/broken while region setup is in progress.
-            region_emp_ids = set(emp_df_all["emp_id"]) if not emp_df_all.empty else set()
-
+        # Get employees in TL's region
+        emp_df = get_all_employees_df()
+        region_employees = emp_df[emp_df["region"] == tl_region]
+        emp_ids_in_region = region_employees["emp_id"].tolist()
+        
+        st.info(f"**Region:** {tl_region} | **Employees in region:** {len(emp_ids_in_region)}")
         st.divider()
         
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-            "📥 Pending New Counter Requests", "✅ Approved Requests", "❌ Rejected Requests",
-            "👥 All Employees", "🏬 All Counters (Excel view)", 
-            "🗑️ Pending Removal Requests", "✅ Approved Removals"
-        ])
-
-        # Tab 1: Pending Requests
-        with tab1:
-            st.subheader("Pending Partner Requests")
-            pending_result = supabase.table("partner_requests").select("*").eq("status", "Pending").order("requested_date").execute()
-
-            if pending_result.data:
-                pending_result.data = [req for req in pending_result.data if req.get('emp_id') in region_emp_ids]
-
-            if pending_result.data and len(pending_result.data) > 0:
-                for req in pending_result.data:
-                    with st.container(border=True):
-                        col1, col2, col3 = st.columns([2, 2, 1])
-
-                        with col1:
-                            st.write(f"**Employee:** {req['emp_name']} ({req['emp_id']})")
-                            st.write(f"**New Partner:** {req['new_partner_name']}")
-                            st.write(f"**GST Number:** {req['new_gst_number']}")
-                            st.write(f"**City/State:** {req.get('new_city') or '-'} / {req.get('new_state') or '-'}")
-
-                        with col2:
-                            st.write(f"**Reason:** {req['reason']}")
-                            st.write(f"**Requested:** {req['requested_date']}")
-
-                        st.divider()
-
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-                            tl_comment = st.text_area("Add Comments", key=f"comment_{req['request_id']}", height=80)
-
-                        with col2:
-                            if st.button("✅ Approve", key=f"approve_{req['request_id']}"):
-                                try:
-                                    supabase.table("partner_requests").update({
-                                        'status': 'Approved',
-                                        'tl_comments': tl_comment,
-                                        'reviewed_by': st.session_state.user_id,
-                                        'reviewed_date': datetime.now().isoformat()
-                                    }).eq("request_id", req['request_id']).execute()
-
-                                    partner_data = {
-                                        'partner_id': f"P{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                                        'partner_name': req['new_partner_name'],
-                                        'gst_number': req['new_gst_number'],
-                                        'city': req.get('new_city'),
-                                        'state': req.get('new_state'),
-                                        'emp_id': req['emp_id'],
-                                        'status': 'Active',
-                                        'created_date': datetime.now().isoformat()
-                                    }
-                                    supabase.table("partners").insert(partner_data).execute()
-
-                                    st.success("✅ Request Approved!")
-                                    get_all_partners_df.clear()
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
-
-                            if st.button("❌ Reject", key=f"reject_{req['request_id']}"):
-                                try:
-                                    supabase.table("partner_requests").update({
-                                        'status': 'Rejected',
-                                        'tl_comments': tl_comment,
-                                        'reviewed_by': st.session_state.user_id,
-                                        'reviewed_date': datetime.now().isoformat()
-                                    }).eq("request_id", req['request_id']).execute()
-
-                                    st.error("❌ Request Rejected!")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
-            else:
-                st.info("✅ All requests are processed!")
-
-        # Tab 2: Approved Requests
-        with tab2:
-            st.subheader("Approved Partner Requests")
-            approved_result = supabase.table("partner_requests").select("*").eq("status", "Approved").order("reviewed_date", desc=True).execute()
-
-            if approved_result.data:
-                approved_result.data = [req for req in approved_result.data if req.get('emp_id') in region_emp_ids]
-
-            if approved_result.data and len(approved_result.data) > 0:
-                approved_df = pd.DataFrame(approved_result.data)
-                cols = [c for c in ["emp_name", "new_partner_name", "new_gst_number", "new_city", "new_state", "requested_date", "reviewed_date"] if c in approved_df.columns]
-                st.dataframe(approved_df[cols], use_container_width=True, hide_index=True)
-            else:
-                st.info("No approved requests")
-
-        # Tab 3: Rejected Requests
-        with tab3:
-            st.subheader("Rejected Partner Requests")
-            rejected_result = supabase.table("partner_requests").select("*").eq("status", "Rejected").order("reviewed_date", desc=True).execute()
-
-            if rejected_result.data:
-                rejected_result.data = [req for req in rejected_result.data if req.get('emp_id') in region_emp_ids]
-
-            if rejected_result.data and len(rejected_result.data) > 0:
-                rejected_df = pd.DataFrame(rejected_result.data)
-                cols = [c for c in ["emp_name", "new_partner_name", "new_gst_number", "new_city", "new_state", "requested_date", "reviewed_date"] if c in rejected_df.columns]
-                st.dataframe(rejected_df[cols], use_container_width=True, hide_index=True)
-            else:
-                st.info("No rejected requests")
-
-        # Tab 4: All Employees (master data)
-        with tab4:
-            st.subheader("Employee Master Data")
-            emp_df = get_all_employees_df()
-            emp_df = emp_df[emp_df["emp_id"].isin(region_emp_ids)] if not emp_df.empty else emp_df
-            partners_df = get_all_partners_df()
-            partners_df = partners_df[partners_df["emp_id"].isin(region_emp_ids)] if not partners_df.empty else partners_df
-
-            if emp_df.empty:
-                st.info("No employees found.")
-            else:
-                counter_counts = (
-                    partners_df.groupby("emp_id").size().rename("counter_count")
-                    if not partners_df.empty else pd.Series(dtype=int)
-                )
-                emp_df = emp_df.merge(counter_counts, how="left", left_on="emp_id", right_index=True)
-                emp_df["counter_count"] = emp_df["counter_count"].fillna(0).astype(int)
-
-                fcol1, fcol2, fcol3 = st.columns(3)
-                with fcol1:
-                    regions = ["All"] + sorted([r for r in emp_df["region"].dropna().unique()])
-                    region_filter = st.selectbox("Region", regions)
-                with fcol2:
-                    cats = ["All"] + sorted([c for c in emp_df["sales_force_category"].dropna().unique()])
-                    cat_filter = st.selectbox("Category", cats)
-                with fcol3:
-                    search = st.text_input("🔎 Search (name / ID / manager)")
-
-                filtered = emp_df.copy()
-                if region_filter != "All":
-                    filtered = filtered[filtered["region"] == region_filter]
-                if cat_filter != "All":
-                    filtered = filtered[filtered["sales_force_category"] == cat_filter]
-                if search:
-                    mask = filtered.apply(
-                        lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
-                    )
-                    filtered = filtered[mask]
-
-                display_cols = ["emp_id", "emp_name", "region", "sales_force_category", "contact_number",
-                                 "email", "field_operations_manager", "reporting_manager", "regional_manager",
-                                 "counter_count"]
-                display_cols = [c for c in display_cols if c in filtered.columns]
-                rename = {
-                    "emp_id": "Employee ID", "emp_name": "Name", "region": "Region",
-                    "sales_force_category": "Category", "contact_number": "Contact Number",
-                    "email": "FOS Email ID", "field_operations_manager": "Field Operations Manager",
-                    "reporting_manager": "Reporting Manager", "regional_manager": "Regional Manager",
-                    "counter_count": "# Counters",
-                }
-                st.caption(f"{len(filtered)} employee(s)")
-                st.dataframe(filtered[display_cols].rename(columns=rename), use_container_width=True, hide_index=True)
-
-        # Tab 5: All Counters, flat Excel-style view
-        with tab5:
-            st.subheader("All CAR Counters (matches TPS_New.xlsx layout)")
-            emp_df = get_all_employees_df()
-            partners_df = get_all_partners_df()
-            partners_df = partners_df[partners_df["emp_id"].isin(region_emp_ids)] if not partners_df.empty else partners_df
-
-            if partners_df.empty:
-                st.info("No counters found.")
-            else:
-                merge_cols = [c for c in ["emp_id", "region", "sales_force_category", "emp_name",
-                                           "contact_number", "email", "field_operations_manager",
-                                           "reporting_manager", "regional_manager"] if c in emp_df.columns]
-                merged = partners_df.merge(emp_df[merge_cols], on="emp_id", how="left")
-
-                fcol1, fcol2, fcol3, fcol4 = st.columns(4)
-                with fcol1:
-                    regions = ["All"] + sorted([r for r in merged["region"].dropna().unique()])
-                    region_filter = st.selectbox("Region", regions, key="counters_region")
-                with fcol2:
-                    states = ["All"] + sorted([s for s in merged["state"].dropna().unique()])
-                    state_filter = st.selectbox("State", states, key="counters_state")
-                with fcol3:
-                    cats = ["All"] + sorted([c for c in merged["sales_force_category"].dropna().unique()])
-                    cat_filter = st.selectbox("Category", cats, key="counters_cat")
-                with fcol4:
-                    search = st.text_input("🔎 Search (name, GST, city...)", key="counters_search")
-
-                filtered = merged.copy()
-                if region_filter != "All":
-                    filtered = filtered[filtered["region"] == region_filter]
-                if state_filter != "All":
-                    filtered = filtered[filtered["state"] == state_filter]
-                if cat_filter != "All":
-                    filtered = filtered[filtered["sales_force_category"] == cat_filter]
-                if search:
-                    mask = filtered.apply(
-                        lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
-                    )
-                    filtered = filtered[mask]
-
-                st.caption(f"{len(filtered)} counter(s)")
-                display_df = format_display(filtered)
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-                st.download_button(
-                    "⬇️ Download filtered view as CSV",
-                    display_df.to_csv(index=False).encode("utf-8"),
-                    file_name="tps_counters_export.csv",
-                    mime="text/csv",
-                )
-
-        # Tab 6: Pending Removal Requests
-        with tab6:
-            st.subheader("Pending Counter Removal Requests")
-            pending_removal_result = supabase.table("counter_removal_requests").select("*").eq("status", "Pending").order("requested_date").execute()
-
-            if pending_removal_result.data:
-                pending_removal_result.data = [req for req in pending_removal_result.data if req.get('emp_id') in region_emp_ids]
-
-            if pending_removal_result.data and len(pending_removal_result.data) > 0:
-                for req in pending_removal_result.data:
-                    with st.container(border=True):
-                        col1, col2, col3 = st.columns([2, 2, 1])
-
-                        with col1:
-                            st.write(f"**Employee:** {req['emp_name']} ({req['emp_id']})")
-                            st.write(f"**Counter to Remove:** {req['partner_name']}")
-                            st.write(f"**GST Number:** {req['gst_number']}")
-
-                        with col2:
-                            st.write(f"**Reason:** {req['removal_reason']}")
-                            st.write(f"**Requested:** {req['requested_date']}")
-
-                        st.divider()
-
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-                            tl_comment = st.text_area("Add Comments", key=f"removal_comment_{req['partner_id']}", height=80)
-
-                        with col2:
-                            if st.button("✅ Approve & Remove", key=f"approve_removal_{req['partner_id']}"):
-                                try:
-                                    # Update removal request status
-                                    supabase.table("counter_removal_requests").update({
-                                        'status': 'Approved',
-                                        'tl_comments': tl_comment,
-                                        'reviewed_by': st.session_state.user_id,
-                                        'reviewed_date': datetime.now().isoformat()
-                                    }).eq("partner_id", req['partner_id']).eq("status", "Pending").execute()
-
-                                    # Delete the counter from partners table
-                                    supabase.table("partners").delete().eq("partner_id", req['partner_id']).execute()
-
-                                    st.success("✅ Counter removed successfully!")
-                                    get_all_partners_df.clear()
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
-
-                            if st.button("❌ Reject Removal", key=f"reject_removal_{req['partner_id']}"):
-                                try:
-                                    supabase.table("counter_removal_requests").update({
-                                        'status': 'Rejected',
-                                        'tl_comments': tl_comment,
-                                        'reviewed_by': st.session_state.user_id,
-                                        'reviewed_date': datetime.now().isoformat()
-                                    }).eq("partner_id", req['partner_id']).eq("status", "Pending").execute()
-
-                                    st.error("❌ Removal request rejected!")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
-            else:
-                st.info("✅ No pending removal requests!")
-
-        # Tab 7: Approved Removals
-        with tab7:
-            st.subheader("Approved Counter Removals")
-            approved_removal_result = supabase.table("counter_removal_requests").select("*").eq("status", "Approved").order("reviewed_date", desc=True).execute()
-
-            if approved_removal_result.data:
-                approved_removal_result.data = [req for req in approved_removal_result.data if req.get('emp_id') in region_emp_ids]
-
-            if approved_removal_result.data and len(approved_removal_result.data) > 0:
-                approved_removal_df = pd.DataFrame(approved_removal_result.data)
-                cols = [c for c in ["emp_name", "partner_name", "gst_number", "removal_reason", "requested_date", "reviewed_date"] if c in approved_removal_df.columns]
-                st.dataframe(approved_removal_df[cols], use_container_width=True, hide_index=True)
-            else:
-                st.info("No approved removals")
-
+        # Fetch pending requests from employees in this region
+        all_pending = fetch_all_rows("partner_requests", eq_filters={"status": "pending"})
+        my_pending = [r for r in all_pending if r.get("emp_id") in emp_ids_in_region]
+        
+        if not my_pending:
+            st.success("✅ No pending requests! All caught up.")
+            return
+        
+        st.subheader(f"⏳ Pending Requests ({len(my_pending)})")
+        
+        # Display pending requests
+        for idx, req in enumerate(my_pending):
+            with st.expander(f"📝 {req.get('partner_name')} - {req.get('emp_id')} (GST: {req.get('gst_number')})"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Employee ID:** {req.get('emp_id')}")
+                    emp = region_employees[region_employees["emp_id"] == req.get('emp_id')]
+                    if not emp.empty:
+                        st.write(f"**Employee Name:** {emp.iloc[0].get('emp_name')}")
+                    st.write(f"**Counter Name:** {req.get('partner_name')}")
+                    st.write(f"**GST Number:** {req.get('gst_number')}")
+                
+                with col2:
+                    st.write(f"**City:** {req.get('city', 'N/A')}")
+                    st.write(f"**State:** {req.get('state', 'N/A')}")
+                    st.write(f"**Contact Person:** {req.get('contact_person', 'N/A')}")
+                    st.write(f"**Phone:** {req.get('contact_phone', 'N/A')}")
+                
+                if req.get('remarks'):
+                    st.write(f"**Remarks:** {req.get('remarks')}")
+                
+                st.write(f"**Submitted:** {pd.to_datetime(req.get('created_date')).strftime('%Y-%m-%d %H:%M')}")
+                
+                # Action buttons
+                acol1, acol2, acol3 = st.columns(3)
+                
+                with acol1:
+                    if st.button("✅ Approve", key=f"approve_{idx}_{req.get('id', '')}"):
+                        try:
+                            supabase.table("partner_requests").update({
+                                "status": "approved",
+                                "updated_date": datetime.now().isoformat(),
+                                "approved_by": st.session_state.user_id,
+                                "approved_date": datetime.now().isoformat(),
+                            }).eq("id", req.get("id")).execute()
+                            
+                            st.success(f"✅ Request approved!")
+                            get_pending_requests_df.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error approving request: {e}")
+                
+                with acol2:
+                    if st.button("❌ Reject", key=f"reject_{idx}_{req.get('id', '')}"):
+                        st.session_state[f"reject_{req.get('id')}"] = True
+                
+                with acol3:
+                    st.write("")  # Spacer
+                
+                # Rejection reason
+                if st.session_state.get(f"reject_{req.get('id')}"):
+                    rejection_reason = st.text_area(f"Reason for rejection:", key=f"reject_reason_{req.get('id')}")
+                    if st.button("Submit Rejection", key=f"submit_reject_{req.get('id')}"):
+                        try:
+                            supabase.table("partner_requests").update({
+                                "status": "rejected",
+                                "updated_date": datetime.now().isoformat(),
+                                "rejected_by": st.session_state.user_id,
+                                "rejected_date": datetime.now().isoformat(),
+                                "rejection_reason": rejection_reason or None,
+                            }).eq("id", req.get("id")).execute()
+                            
+                            st.success("❌ Request rejected.")
+                            st.session_state[f"reject_{req.get('id')}"] = False
+                            get_pending_requests_df.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error rejecting request: {e}")
+    
     except Exception as e:
         st.error(f"Error loading TL dashboard: {str(e)}")
 
@@ -1007,299 +512,435 @@ def tl_dashboard():
 # ---------------------------------------------------------------
 
 def admin_dashboard():
-    st.title(f"🛡️ Admin Dashboard - {st.session_state.user_name}")
-
+    """Admin dashboard for system management and viewing all requests."""
+    st.title(f"🔧 Admin Dashboard - {st.session_state.user_name}")
+    
     try:
-        emp_df = get_all_employees_df()
-        partners_df = get_all_partners_df()
-        requests_result = supabase.table("partner_requests").select("*").execute()
-        requests_df = pd.DataFrame(requests_result.data or [])
-
-        # ---- Overview metrics ----
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Employees", len(emp_df))
-        with col2:
-            st.metric("Total Counters", len(partners_df))
-        with col3:
-            pending_n = len(requests_df[requests_df["status"] == "Pending"]) if not requests_df.empty else 0
-            st.metric("Pending Requests", pending_n)
-        with col4:
-            approved_n = len(requests_df[requests_df["status"] == "Approved"]) if not requests_df.empty else 0
-            st.metric("Approved (TL confirmed)", approved_n)
-
-        st.divider()
-
-        # ---- Upload TPS Excel File ----
-        st.subheader("📤 Upload TPS Excel File")
+        admin_tabs = st.tabs([
+            "📊 Dashboard",
+            "⏳ Pending Requests (TL Bucket)",
+            "📋 All Requests",
+            "👥 Manage Users",
+            "📤 Bulk Upload"
+        ])
         
-        with st.expander("ℹ️ Upload Instructions", expanded=False):
-            st.info("""
-            **Excel File Requirements:**
-            - File must have sheets with employees and counters data
-            - Expected columns for employees: emp_id, emp_name, region, sales_force_category, contact_number, email, field_operations_manager, reporting_manager, regional_manager
-            - Expected columns for counters: partner_name, gst_number, city, state, emp_id (to link to employee)
-            - GST numbers must be in valid format (15 alphanumeric characters, e.g., 27AAFCA1234G2Z0)
-            """)
+        # ---- Tab 1: Dashboard ----
+        with admin_tabs[0]:
+            st.subheader("System Overview")
+            
+            emp_df = get_all_employees_df()
+            partners_df = get_all_partners_df()
+            pending_df = get_pending_requests_df()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Employees", len(emp_df))
+            with col2:
+                st.metric("Total Counters", len(partners_df))
+            with col3:
+                st.metric("Pending Requests", len(pending_df))
+            with col4:
+                try:
+                    approved = len(fetch_all_rows("partner_requests", eq_filters={"status": "approved"}))
+                    st.metric("Approved Requests", approved)
+                except:
+                    st.metric("Approved Requests", "N/A")
+            
+            st.divider()
+            
+            # Regional breakdown
+            st.subheader("Regional Breakdown")
+            if not emp_df.empty:
+                regional = emp_df["region"].value_counts()
+                st.bar_chart(regional)
         
-        uploaded_file = st.file_uploader("Choose TPS Excel file", type=["xlsx", "xls"], key="tps_upload")
-        
-        if uploaded_file:
-            try:
-                # Read Excel file
-                xls = pd.ExcelFile(uploaded_file)
-                sheet_names = xls.sheet_names
+        # ---- Tab 2: Pending Requests (TL Bucket) ----
+        with admin_tabs[1]:
+            st.subheader("⏳ Pending Requests - TL Review Queue")
+            st.write("View all pending requests waiting for Team Lead approval")
+            
+            pending_requests = fetch_all_rows("partner_requests", eq_filters={"status": "pending"})
+            
+            if not pending_requests:
+                st.info("✅ No pending requests!")
+            else:
+                pending_df = pd.DataFrame(pending_requests)
                 
-                st.info(f"📋 Found sheets: {', '.join(sheet_names)}")
+                # Merge with employee info
+                emp_df = get_all_employees_df()
+                if not emp_df.empty:
+                    pending_df = pending_df.merge(
+                        emp_df[["emp_id", "emp_name", "region"]],
+                        on="emp_id",
+                        how="left"
+                    )
                 
-                # Let admin select which sheets contain employees and counters
-                col1, col2 = st.columns(2)
+                # Display metrics
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    emp_sheet = st.selectbox("Sheet with Employee Data", sheet_names, key="emp_sheet_select")
+                    st.metric("Total Pending", len(pending_df))
                 with col2:
-                    counter_sheet = st.selectbox("Sheet with Counter Data", sheet_names, key="counter_sheet_select")
+                    if "region" in pending_df.columns:
+                        st.metric("Regions", pending_df["region"].nunique())
+                with col3:
+                    st.metric("Employees", pending_df["emp_id"].nunique())
                 
-                if st.button("Preview Data", key="preview_upload_btn"):
-                    emp_df_upload = pd.read_excel(uploaded_file, sheet_name=emp_sheet)
-                    counter_df_upload = pd.read_excel(uploaded_file, sheet_name=counter_sheet)
-                    
-                    st.subheader("👥 Employee Preview")
-                    st.dataframe(emp_df_upload.head(), use_container_width=True)
-                    
-                    st.subheader("🏬 Counter Preview")
-                    st.dataframe(counter_df_upload.head(), use_container_width=True)
+                st.divider()
                 
-                if st.button("⬆️ Upload & Import Data", key="upload_tps_btn", type="primary"):
-                    emp_df_upload = pd.read_excel(uploaded_file, sheet_name=emp_sheet)
-                    counter_df_upload = pd.read_excel(uploaded_file, sheet_name=counter_sheet)
-                    
-                    # Progress tracking
-                    progress_bar = st.progress(0)
-                    status_placeholder = st.empty()
-                    
-                    try:
-                        # Clean column names (remove whitespace)
-                        emp_df_upload.columns = emp_df_upload.columns.str.strip()
-                        counter_df_upload.columns = counter_df_upload.columns.str.strip()
+                # Filters
+                fcol1, fcol2, fcol3 = st.columns(3)
+                
+                with fcol1:
+                    if "region" in pending_df.columns:
+                        regions = ["All"] + sorted(pending_df["region"].dropna().unique().tolist())
+                        region_filter = st.selectbox("Filter by Region", regions, key="pending_region")
+                    else:
+                        region_filter = "All"
+                
+                with fcol2:
+                    sort_by = st.selectbox("Sort by", ["Oldest First", "Newest First"], key="pending_sort")
+                
+                with fcol3:
+                    search_term = st.text_input("Search (Counter/Employee)", key="pending_search")
+                
+                # Apply filters
+                filtered_pending = pending_df.copy()
+                
+                if region_filter != "All" and "region" in filtered_pending.columns:
+                    filtered_pending = filtered_pending[filtered_pending["region"] == region_filter]
+                
+                if search_term:
+                    mask = (
+                        filtered_pending["partner_name"].str.contains(search_term, case=False, na=False) |
+                        filtered_pending["emp_id"].str.contains(search_term, case=False, na=False)
+                    )
+                    filtered_pending = filtered_pending[mask]
+                
+                if sort_by == "Newest First":
+                    filtered_pending = filtered_pending.sort_values("created_date", ascending=False)
+                else:
+                    filtered_pending = filtered_pending.sort_values("created_date", ascending=True)
+                
+                # Display requests with details
+                st.subheader(f"Showing {len(filtered_pending)} pending request(s)")
+                
+                for idx, row in filtered_pending.iterrows():
+                    with st.expander(f"📝 {row.get('partner_name')} | {row.get('emp_id')} | {row.get('region', 'N/A')}"):
+                        col1, col2, col3 = st.columns([2, 2, 2])
                         
-                        # Upload employees
-                        emp_count = 0
-                        for idx, row in emp_df_upload.iterrows():
-                            emp_data = {
-                                "emp_id": str(row.get("emp_id", "")).strip(),
-                                "emp_name": str(row.get("emp_name", "")).strip(),
-                                "region": str(row.get("region", "")) if pd.notna(row.get("region")) else None,
-                                "sales_force_category": str(row.get("sales_force_category", "")) if pd.notna(row.get("sales_force_category")) else None,
-                                "contact_number": str(row.get("contact_number", "")) if pd.notna(row.get("contact_number")) else None,
-                                "email": str(row.get("email", "")) if pd.notna(row.get("email")) else None,
-                                "field_operations_manager": str(row.get("field_operations_manager", "")) if pd.notna(row.get("field_operations_manager")) else None,
-                                "reporting_manager": str(row.get("reporting_manager", "")) if pd.notna(row.get("reporting_manager")) else None,
-                                "regional_manager": str(row.get("regional_manager", "")) if pd.notna(row.get("regional_manager")) else None,
-                            }
-                            
-                            # Skip if emp_id is empty
-                            if emp_data["emp_id"]:
+                        with col1:
+                            st.write("**Employee Details**")
+                            st.write(f"ID: {row.get('emp_id')}")
+                            st.write(f"Name: {row.get('emp_name', 'N/A')}")
+                            st.write(f"Region: {row.get('region', 'N/A')}")
+                        
+                        with col2:
+                            st.write("**Counter/Partner Details**")
+                            st.write(f"Name: {row.get('partner_name')}")
+                            st.write(f"GST: {row.get('gst_number')}")
+                            st.write(f"City: {row.get('city', 'N/A')}")
+                            st.write(f"State: {row.get('state', 'N/A')}")
+                        
+                        with col3:
+                            st.write("**Contact Details**")
+                            st.write(f"Contact: {row.get('contact_person', 'N/A')}")
+                            st.write(f"Phone: {row.get('contact_phone', 'N/A')}")
+                            st.write(f"Submitted: {pd.to_datetime(row.get('created_date')).strftime('%Y-%m-%d %H:%M')}")
+                        
+                        if row.get('remarks'):
+                            st.write(f"**Remarks:** {row.get('remarks')}")
+                        
+                        # Admin actions
+                        st.divider()
+                        st.write("**Admin Actions**")
+                        action_col1, action_col2, action_col3 = st.columns(3)
+                        
+                        with action_col1:
+                            if st.button("ℹ️ View Full Details", key=f"view_details_{idx}"):
+                                st.json(dict(row))
+                        
+                        with action_col2:
+                            if st.button("👁️ Track Status", key=f"track_status_{idx}"):
+                                st.info(f"Status: Pending | Assigned to TL in {row.get('region', 'N/A')}")
+                        
+                        with action_col3:
+                            if st.button("📧 Notify TL", key=f"notify_tl_{idx}"):
+                                # Get TL info
+                                tl_info = get_tl_for_employee(row.get('emp_id'))
+                                if tl_info and tl_info.get("whatsapp_number"):
+                                    msg = f"Reminder: Pending counter approval - {row.get('partner_name')} from {row.get('emp_name', 'Employee')}"
+                                    result = send_whatsapp_notification(tl_info["whatsapp_number"], msg)
+                                    if result.get("sent"):
+                                        st.success("✅ TL notified via WhatsApp")
+                                    else:
+                                        st.warning(f"⚠️ Could not send notification: {result.get('error')}")
+                                else:
+                                    st.warning("⚠️ TL WhatsApp number not found")
+        
+        # ---- Tab 3: All Requests ----
+        with admin_tabs[2]:
+            st.subheader("📋 All Partner Requests")
+            
+            all_requests = fetch_all_rows("partner_requests")
+            
+            if not all_requests:
+                st.info("No requests found.")
+            else:
+                requests_df = pd.DataFrame(all_requests)
+                
+                # Add status display
+                requests_df["Status"] = requests_df["status"].map(REQUEST_STATUS_DISPLAY)
+                requests_df["Created"] = pd.to_datetime(requests_df["created_date"]).dt.strftime("%Y-%m-%d")
+                
+                # Merge with employee info
+                emp_df = get_all_employees_df()
+                if not emp_df.empty:
+                    requests_df = requests_df.merge(
+                        emp_df[["emp_id", "emp_name", "region"]],
+                        on="emp_id",
+                        how="left"
+                    )
+                
+                # Filters
+                fcol1, fcol2, fcol3 = st.columns(3)
+                
+                with fcol1:
+                    statuses = ["All"] + [s for s in requests_df["status"].unique() if pd.notna(s)]
+                    status_filter = st.selectbox("Filter by Status", statuses, key="all_status")
+                
+                with fcol2:
+                    if "region" in requests_df.columns:
+                        regions = ["All"] + sorted([r for r in requests_df["region"].unique() if pd.notna(r)])
+                        region_filter = st.selectbox("Filter by Region", regions, key="all_region")
+                    else:
+                        region_filter = "All"
+                
+                with fcol3:
+                    search = st.text_input("Search", key="all_search")
+                
+                # Apply filters
+                filtered = requests_df.copy()
+                
+                if status_filter != "All":
+                    filtered = filtered[filtered["status"] == status_filter]
+                
+                if region_filter != "All" and "region" in filtered.columns:
+                    filtered = filtered[filtered["region"] == region_filter]
+                
+                if search:
+                    mask = (
+                        filtered["partner_name"].str.contains(search, case=False, na=False) |
+                        filtered["emp_id"].str.contains(search, case=False, na=False)
+                    )
+                    filtered = filtered[mask]
+                
+                # Display
+                display_cols = ["partner_name", "gst_number", "emp_id", "emp_name", "region", "Status", "Created"]
+                display_cols = [c for c in display_cols if c in filtered.columns]
+                
+                st.dataframe(
+                    filtered[display_cols].rename(columns={
+                        "partner_name": "Counter Name",
+                        "emp_id": "Emp ID",
+                        "emp_name": "Employee",
+                        "region": "Region"
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Export option
+                export_bytes = to_excel_bytes({"All Requests": filtered[display_cols]})
+                st.download_button(
+                    "⬇️ Download (Excel)",
+                    export_bytes,
+                    file_name=f"Partner_Requests_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="export_all_requests"
+                )
+        
+        # ---- Tab 4: Manage Users ----
+        with admin_tabs[3]:
+            st.subheader("👥 User Management")
+            
+            user_tabs = st.tabs(["Add Employee", "Add Team Lead", "View All Users"])
+            
+            # Add Employee
+            with user_tabs[0]:
+                st.write("Add a new employee to the system")
+                with st.form("add_emp_form", clear_on_submit=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        emp_id = st.text_input("Employee ID *")
+                        emp_name = st.text_input("Name *")
+                        contact = st.text_input("Contact Number")
+                        email = st.text_input("Email")
+                    with col2:
+                        region = st.text_input("Region *")
+                        category = st.text_input("Sales Force Category")
+                        fom = st.text_input("Field Operations Manager")
+                        rm = st.text_input("Reporting Manager")
+                    
+                    if st.form_submit_button("Add Employee", use_container_width=True, type="primary"):
+                        if emp_id and emp_name and region:
+                            try:
+                                supabase.table("employees").insert({
+                                    "emp_id": emp_id.strip(),
+                                    "emp_name": emp_name.strip(),
+                                    "region": region.strip(),
+                                    "contact_number": contact or None,
+                                    "email": email or None,
+                                    "sales_force_category": category or None,
+                                    "field_operations_manager": fom or None,
+                                    "reporting_manager": rm or None,
+                                }).execute()
+                                st.success(f"✅ Employee {emp_id} added!")
+                                get_all_employees_df.clear()
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
+                        else:
+                            st.error("Employee ID, Name, and Region are required")
+            
+            # Add Team Lead
+            with user_tabs[1]:
+                st.write("Add a new team lead to the system")
+                with st.form("add_tl_form", clear_on_submit=True):
+                    tl_id = st.text_input("Team Lead ID *")
+                    tl_name = st.text_input("Name *")
+                    region = st.text_input("Region/Area *")
+                    whatsapp = st.text_input("WhatsApp Number")
+                    email = st.text_input("Email")
+                    
+                    if st.form_submit_button("Add Team Lead", use_container_width=True, type="primary"):
+                        if tl_id and tl_name and region:
+                            try:
+                                supabase.table("tl_users").insert({
+                                    "tl_id": tl_id.strip(),
+                                    "tl_name": tl_name.strip(),
+                                    "region": region.strip(),
+                                    "whatsapp_number": whatsapp or None,
+                                    "email": email or None,
+                                }).execute()
+                                st.success(f"✅ Team Lead {tl_id} added!")
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
+                        else:
+                            st.error("TL ID, Name, and Region are required")
+            
+            # View All Users
+            with user_tabs[2]:
+                st.write("View all employees and team leads")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Employees")
+                    emp_df = get_all_employees_df()
+                    if not emp_df.empty:
+                        st.dataframe(
+                            emp_df[["emp_id", "emp_name", "region", "contact_number"]],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("No employees")
+                
+                with col2:
+                    st.subheader("Team Leads")
+                    try:
+                        tl_data = fetch_all_rows("tl_users")
+                        if tl_data:
+                            tl_df = pd.DataFrame(tl_data)
+                            st.dataframe(
+                                tl_df[["tl_id", "tl_name", "region"]],
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                        else:
+                            st.info("No team leads")
+                    except Exception as e:
+                        st.warning(f"Could not load TLs: {e}")
+        
+        # ---- Tab 5: Bulk Upload ----
+        with admin_tabs[4]:
+            st.subheader("📤 Bulk Data Upload")
+            st.write("Upload Excel file with employee and counter data")
+            
+            uploaded_file = st.file_uploader("Choose Excel file (TPS_New.xlsx format)", type=['xlsx'])
+            
+            if uploaded_file:
+                try:
+                    excel_file = pd.ExcelFile(uploaded_file)
+                    st.info(f"Sheets found: {', '.join(excel_file.sheet_names)}")
+                    
+                    emp_count = 0
+                    counter_count = 0
+                    invalid_gst_count = 0
+                    
+                    progress_bar = st.progress(0)
+                    
+                    # Process employees sheet
+                    if 'employees' in excel_file.sheet_names or 'Employees' in excel_file.sheet_names:
+                        sheet_name = 'employees' if 'employees' in excel_file.sheet_names else 'Employees'
+                        emp_sheet = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+                        
+                        for idx, row in emp_sheet.iterrows():
+                            if pd.notna(row.get('emp_id')) and pd.notna(row.get('emp_name')):
                                 try:
-                                    supabase.table("employees").insert(emp_data).execute()
+                                    supabase.table("employees").insert({
+                                        "emp_id": str(row.get('emp_id')).strip(),
+                                        "emp_name": str(row.get('emp_name')).strip(),
+                                        "region": row.get('region'),
+                                        "contact_number": row.get('contact_number'),
+                                        "email": row.get('email'),
+                                        "sales_force_category": row.get('sales_force_category'),
+                                        "field_operations_manager": row.get('field_operations_manager'),
+                                        "reporting_manager": row.get('reporting_manager'),
+                                        "regional_manager": row.get('regional_manager'),
+                                    }).execute()
                                     emp_count += 1
-                                except Exception as e:
-                                    # Employee might already exist, try update
+                                except:
+                                    pass
+                            progress_bar.progress((idx + 1) / len(emp_sheet))
+                    
+                    # Process counters/partners sheet
+                    if 'partners' in excel_file.sheet_names or 'Partners' in excel_file.sheet_names:
+                        sheet_name = 'partners' if 'partners' in excel_file.sheet_names else 'Partners'
+                        counter_sheet = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+                        
+                        for idx, row in counter_sheet.iterrows():
+                            if pd.notna(row.get('partner_name')) and pd.notna(row.get('gst_number')):
+                                is_valid, _ = validate_gst_format(str(row.get('gst_number')))
+                                if is_valid:
                                     try:
-                                        supabase.table("employees").update(emp_data).eq("emp_id", emp_data["emp_id"]).execute()
-                                        emp_count += 1
+                                        supabase.table("partners").insert({
+                                            "emp_id": str(row.get('emp_id', '')).strip(),
+                                            "partner_name": row.get('partner_name'),
+                                            "gst_number": str(row.get('gst_number')).strip().upper(),
+                                            "city": row.get('city'),
+                                            "state": row.get('state'),
+                                            "created_date": datetime.now().isoformat(),
+                                        }).execute()
+                                        counter_count += 1
                                     except:
                                         pass
-                        
-                        progress_bar.progress(50)
-                        status_placeholder.info(f"✅ Imported {emp_count} employees")
-                        
-                        # Upload counters
-                        counter_count = 0
-                        invalid_gst_count = 0
-                        
-                        for idx, row in counter_df_upload.iterrows():
-                            gst = str(row.get("gst_number", "")).strip().upper()
-                            
-                            # Validate GST
-                            gst_valid, _ = validate_gst_format(gst)
-                            
-                            if not gst_valid:
-                                invalid_gst_count += 1
-                                st.warning(f"Row {idx+2}: Invalid GST format '{gst}' - Skipping this counter")
-                                continue
-                            
-                            counter_data = {
-                                "partner_id": f"P{datetime.now().strftime('%Y%m%d%H%M%S')}{idx}",
-                                "partner_name": str(row.get("partner_name", "")).strip(),
-                                "gst_number": gst,
-                                "city": str(row.get("city", "")) if pd.notna(row.get("city")) else None,
-                                "state": str(row.get("state", "")) if pd.notna(row.get("state")) else None,
-                                "emp_id": str(row.get("emp_id", "")).strip(),
-                                "status": "Active",
-                                "created_date": datetime.now().isoformat()
-                            }
-                            
-                            if counter_data["partner_name"] and counter_data["emp_id"]:
-                                try:
-                                    supabase.table("partners").insert(counter_data).execute()
-                                    counter_count += 1
-                                except Exception as e:
-                                    st.warning(f"Row {idx+2}: Could not insert counter - {str(e)}")
-                        
-                        progress_bar.progress(100)
-                        
-                        st.success(f"""
-                        ✅ **Upload Complete!**
-                        - Employees imported: {emp_count}
-                        - Counters imported: {counter_count}
-                        - Invalid GST numbers skipped: {invalid_gst_count}
-                        """)
-                        
-                        # Clear cache
-                        get_all_employees_df.clear()
-                        get_all_partners_df.clear()
-                        
-                        # Rerun after a delay
-                        import time
-                        time.sleep(2)
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"❌ Error during upload: {str(e)}")
-                        
-            except Exception as e:
-                st.error(f"❌ Error reading file: {str(e)}")
-
-        st.divider()
-
-        # ---- Compute the Excel-style merged counters view (used below) ----
-        if not partners_df.empty:
-            merge_cols = [c for c in ["emp_id", "region", "sales_force_category", "emp_name",
-                                       "contact_number", "email", "field_operations_manager",
-                                       "reporting_manager", "regional_manager"] if c in emp_df.columns]
-            merged = partners_df.merge(emp_df[merge_cols], on="emp_id", how="left")
-            counters_export = format_display(merged)
-        else:
-            counters_export = pd.DataFrame()
-
-        # ---- Manage Employees ----
-        st.subheader("👤 Manage Employees")
-        add_tab, delete_tab = st.tabs(["➕ Add Employee", "🗑️ Delete Employee"])
-
-        with add_tab:
-            with st.form("add_employee_form", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-                with col1:
-                    new_emp_id = st.text_input("Employee ID *")
-                    new_emp_name = st.text_input("Name *")
-                    new_contact = st.text_input("Contact Number")
-                    new_email = st.text_input("Email")
-                    new_category = st.text_input("Sales Force Category")
-                with col2:
-                    new_region = st.text_input("Region")
-                    new_fom = st.text_input("Field Operations Manager")
-                    new_rm = st.text_input("Reporting Manager")
-                    new_regional_mgr = st.text_input("Regional Manager")
-
-                if st.form_submit_button("Add Employee", use_container_width=True):
-                    if new_emp_id and new_emp_name:
-                        try:
-                            supabase.table("employees").insert({
-                                "emp_id": new_emp_id.strip(),
-                                "emp_name": new_emp_name.strip(),
-                                "contact_number": new_contact or None,
-                                "email": new_email or None,
-                                "sales_force_category": new_category or None,
-                                "region": new_region or None,
-                                "field_operations_manager": new_fom or None,
-                                "reporting_manager": new_rm or None,
-                                "regional_manager": new_regional_mgr or None,
-                            }).execute()
-                            st.success(f"✅ Employee {new_emp_id} added.")
-                            get_all_employees_df.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error adding employee: {str(e)}")
-                    else:
-                        st.error("Employee ID and Name are required")
-
-        with delete_tab:
-            if emp_df.empty:
-                st.info("No employees to delete.")
-            else:
-                options = (emp_df["emp_id"] + " - " + emp_df["emp_name"].fillna("")).tolist()
-                choice = st.selectbox("Select employee to delete", options, key="delete_emp_select")
-                emp_id_to_delete = choice.split(" - ")[0] if choice else None
-
-                if emp_id_to_delete:
-                    counter_count = len(partners_df[partners_df["emp_id"] == emp_id_to_delete]) if not partners_df.empty else 0
-                    st.warning(
-                        f"Deleting **{choice}** will also permanently delete their "
-                        f"**{counter_count} counter(s)** and any partner request history for this employee."
-                    )
-                    confirm = st.checkbox("I understand this cannot be undone", key="delete_emp_confirm")
-                    if st.button("🗑️ Delete Employee", disabled=not confirm, use_container_width=True):
-                        try:
-                            supabase.table("partners").delete().eq("emp_id", emp_id_to_delete).execute()
-                            supabase.table("partner_requests").delete().eq("emp_id", emp_id_to_delete).execute()
-                            supabase.table("employees").delete().eq("emp_id", emp_id_to_delete).execute()
-                            st.success(f"✅ Employee {emp_id_to_delete} and related data deleted.")
-                            get_all_employees_df.clear()
-                            get_all_partners_df.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error deleting employee: {str(e)}")
-
-        st.divider()
-
-        # ---- Full data view, Excel-style, filterable ----
-        st.subheader("📊 All Counters (Excel view)")
-        if counters_export.empty:
-            st.info("No counters found.")
-        else:
-            fcol1, fcol2, fcol3, fcol4 = st.columns(4)
-            with fcol1:
-                regions = ["All"] + sorted([r for r in counters_export["Region"].dropna().unique()])
-                region_filter = st.selectbox("Region", regions, key="admin_region")
-            with fcol2:
-                states = ["All"] + sorted([s for s in counters_export["State"].dropna().unique()])
-                state_filter = st.selectbox("State", states, key="admin_state")
-            with fcol3:
-                cats = ["All"] + sorted([c for c in counters_export["Sales Force Category"].dropna().unique()])
-                cat_filter = st.selectbox("Category", cats, key="admin_cat")
-            with fcol4:
-                search = st.text_input("🔎 Search", key="admin_search")
-
-            filtered = counters_export.copy()
-            if region_filter != "All":
-                filtered = filtered[filtered["Region"] == region_filter]
-            if state_filter != "All":
-                filtered = filtered[filtered["State"] == state_filter]
-            if cat_filter != "All":
-                filtered = filtered[filtered["Sales Force Category"] == cat_filter]
-            if search:
-                mask = filtered.apply(
-                    lambda r: search.lower() in " ".join(str(v).lower() for v in r.values), axis=1
-                )
-                filtered = filtered[mask]
-
-            st.caption(f"{len(filtered)} counter(s)")
-            st.dataframe(filtered, use_container_width=True, hide_index=True)
-
-            filtered_excel_bytes = to_excel_bytes({"Filtered Counters": filtered})
-            st.download_button(
-                "⬇️ Download this view (Excel)",
-                filtered_excel_bytes,
-                file_name=f"TPS_Counters_Filtered_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
+                                else:
+                                    invalid_gst_count += 1
+                    
+                    progress_bar.progress(100)
+                    st.success(f"✅ Upload Complete!\n- Employees: {emp_count}\n- Counters: {counter_count}\n- Invalid GST: {invalid_gst_count}")
+                    get_all_employees_df.clear()
+                    get_all_partners_df.clear()
+                
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+    
     except Exception as e:
         st.error(f"Error loading Admin dashboard: {str(e)}")
 
 
 # ---------------------------------------------------------------
-# Main app
+# Main App
 # ---------------------------------------------------------------
 
 def main():
@@ -1312,13 +953,16 @@ def main():
                 st.session_state.logged_in = False
                 st.session_state.user_type = None
                 st.rerun()
-
+        
         if st.session_state.user_type == 'employee':
             employee_dashboard()
-        elif st.session_state.user_type == 'tl':
+        elif st.session_state.user_type == 'team_lead':
             tl_dashboard()
         elif st.session_state.user_type == 'admin':
             admin_dashboard()
+        else:
+            st.error("Unknown user type")
+
 
 if __name__ == "__main__":
     main()
