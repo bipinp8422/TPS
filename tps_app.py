@@ -366,8 +366,23 @@ def employee_dashboard():
             if my_requests:
                 requests_df = pd.DataFrame(my_requests)
                 requests_df["Status"] = requests_df["status"].map(REQUEST_STATUS_DISPLAY)
-                requests_df["Created"] = pd.to_datetime(requests_df["created_date"]).dt.strftime("%Y-%m-%d %H:%M")
-                requests_df["Updated"] = pd.to_datetime(requests_df["updated_date"]).dt.strftime("%Y-%m-%d %H:%M")
+                
+                # Safe date handling
+                if "created_date" in requests_df.columns:
+                    try:
+                        requests_df["Created"] = pd.to_datetime(requests_df["created_date"]).dt.strftime("%Y-%m-%d %H:%M")
+                    except:
+                        requests_df["Created"] = "N/A"
+                else:
+                    requests_df["Created"] = "N/A"
+                
+                if "updated_date" in requests_df.columns:
+                    try:
+                        requests_df["Updated"] = pd.to_datetime(requests_df["updated_date"]).dt.strftime("%Y-%m-%d %H:%M")
+                    except:
+                        requests_df["Updated"] = "N/A"
+                else:
+                    requests_df["Updated"] = "N/A"
                 
                 display_cols = ["partner_name", "gst_number", "city", "state", "Status", "Created", "Updated"]
                 if all(col in requests_df.columns for col in display_cols):
@@ -455,7 +470,16 @@ def tl_dashboard():
                 if req.get('remarks'):
                     st.write(f"**Remarks:** {req.get('remarks')}")
                 
-                st.write(f"**Submitted:** {pd.to_datetime(req.get('created_date')).strftime('%Y-%m-%d %H:%M')}")
+                # Safe date handling
+                created_date = req.get('created_date')
+                if created_date:
+                    try:
+                        formatted_date = pd.to_datetime(created_date).strftime('%Y-%m-%d %H:%M')
+                    except:
+                        formatted_date = str(created_date)
+                else:
+                    formatted_date = "N/A"
+                st.write(f"**Submitted:** {formatted_date}")
                 
                 # Action buttons
                 acol1, acol2, acol3 = st.columns(3)
@@ -616,10 +640,17 @@ def admin_dashboard():
                     )
                     filtered_pending = filtered_pending[mask]
                 
-                if sort_by == "Newest First":
-                    filtered_pending = filtered_pending.sort_values("created_date", ascending=False)
-                else:
-                    filtered_pending = filtered_pending.sort_values("created_date", ascending=True)
+                # Sort - check if created_date exists, otherwise use id
+                if "created_date" in filtered_pending.columns:
+                    if sort_by == "Newest First":
+                        filtered_pending = filtered_pending.sort_values("created_date", ascending=False)
+                    else:
+                        filtered_pending = filtered_pending.sort_values("created_date", ascending=True)
+                elif "id" in filtered_pending.columns:
+                    if sort_by == "Newest First":
+                        filtered_pending = filtered_pending.sort_values("id", ascending=False)
+                    else:
+                        filtered_pending = filtered_pending.sort_values("id", ascending=True)
                 
                 # Display requests with details
                 st.subheader(f"Showing {len(filtered_pending)} pending request(s)")
@@ -645,7 +676,16 @@ def admin_dashboard():
                             st.write("**Contact Details**")
                             st.write(f"Contact: {row.get('contact_person', 'N/A')}")
                             st.write(f"Phone: {row.get('contact_phone', 'N/A')}")
-                            st.write(f"Submitted: {pd.to_datetime(row.get('created_date')).strftime('%Y-%m-%d %H:%M')}")
+                            # Safe date handling
+                            created_date = row.get('created_date')
+                            if created_date:
+                                try:
+                                    formatted_date = pd.to_datetime(created_date).strftime('%Y-%m-%d %H:%M')
+                                except:
+                                    formatted_date = str(created_date)
+                            else:
+                                formatted_date = "N/A"
+                            st.write(f"Submitted: {formatted_date}")
                         
                         if row.get('remarks'):
                             st.write(f"**Remarks:** {row.get('remarks')}")
@@ -690,7 +730,15 @@ def admin_dashboard():
                 
                 # Add status display
                 requests_df["Status"] = requests_df["status"].map(REQUEST_STATUS_DISPLAY)
-                requests_df["Created"] = pd.to_datetime(requests_df["created_date"]).dt.strftime("%Y-%m-%d")
+                
+                # Safe date handling
+                if "created_date" in requests_df.columns:
+                    try:
+                        requests_df["Created"] = pd.to_datetime(requests_df["created_date"]).dt.strftime("%Y-%m-%d")
+                    except:
+                        requests_df["Created"] = "N/A"
+                else:
+                    requests_df["Created"] = "N/A"
                 
                 # Merge with employee info
                 emp_df = get_all_employees_df()
