@@ -402,6 +402,46 @@ def employee_dashboard():
                 st.info("No requests yet. Submit your first request above!")
         except Exception as e:
             st.warning(f"Could not load your requests: {e}")
+        
+        st.divider()
+        
+        # View my assigned counters/partners
+        st.subheader("📦 My Assigned Counters/Partners")
+        
+        try:
+            my_partners = fetch_all_rows("partners", eq_filters={"emp_id": st.session_state.user_id})
+            if my_partners:
+                my_partners_df = pd.DataFrame(my_partners)
+                st.metric("Total Assigned Counters", len(my_partners_df))
+                
+                display_cols = ["partner_name", "gst_number", "city", "state", "created_date"]
+                display_cols = [c for c in display_cols if c in my_partners_df.columns]
+                
+                st.dataframe(
+                    my_partners_df[display_cols].rename(columns={
+                        "partner_name": "Counter Name",
+                        "gst_number": "GST",
+                        "city": "City",
+                        "state": "State",
+                        "created_date": "Assigned On"
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                my_partners_bytes = to_excel_bytes({"My Counters": my_partners_df[display_cols]})
+                st.download_button(
+                    "⬇️ Download My Counters (Excel)",
+                    my_partners_bytes,
+                    file_name=f"My_Counters_{st.session_state.user_id}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="download_my_counters"
+                )
+            else:
+                st.info("No counters assigned to you yet.")
+        except Exception as e:
+            st.warning(f"Could not load your assigned counters: {e}")
     
     except Exception as e:
         st.error(f"Error loading Employee dashboard: {str(e)}")
@@ -436,6 +476,58 @@ def tl_dashboard():
         emp_ids_in_region = region_employees["emp_id"].tolist()
         
         st.info(f"**Region:** {tl_region} | **Employees in region:** {len(emp_ids_in_region)}")
+        st.divider()
+        
+        # View team's assigned counters/partners
+        st.subheader("📦 Team's Assigned Counters/Partners")
+        
+        try:
+            partners_df = get_all_partners_df()
+            if not partners_df.empty and emp_ids_in_region:
+                team_partners = partners_df[partners_df["emp_id"].isin(emp_ids_in_region)].copy()
+                
+                if not team_partners.empty:
+                    team_partners = team_partners.merge(
+                        region_employees[["emp_id", "emp_name"]],
+                        on="emp_id",
+                        how="left"
+                    )
+                    
+                    st.metric("Total Assigned Counters", len(team_partners))
+                    
+                    display_cols = ["emp_id", "emp_name", "partner_name", "gst_number", "city", "state", "created_date"]
+                    display_cols = [c for c in display_cols if c in team_partners.columns]
+                    
+                    st.dataframe(
+                        team_partners[display_cols].rename(columns={
+                            "emp_id": "Employee ID",
+                            "emp_name": "Employee Name",
+                            "partner_name": "Counter Name",
+                            "gst_number": "GST",
+                            "city": "City",
+                            "state": "State",
+                            "created_date": "Assigned On"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    team_bytes = to_excel_bytes({"Team Counters": team_partners[display_cols]})
+                    st.download_button(
+                        "⬇️ Download Team's Counters (Excel)",
+                        team_bytes,
+                        file_name=f"Team_Counters_{tl_region}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="download_team_counters"
+                    )
+                else:
+                    st.info("No counters assigned to your team yet.")
+            else:
+                st.info("No counters assigned to your team yet.")
+        except Exception as e:
+            st.warning(f"Could not load team counters: {e}")
+        
         st.divider()
         
         # Fetch pending requests from employees in this region
