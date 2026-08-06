@@ -545,7 +545,8 @@ def admin_dashboard():
             "⏳ Pending Requests (TL Bucket)",
             "📋 All Requests",
             "👥 Manage Users",
-            "📤 Bulk Upload"
+            "📤 Bulk Upload",
+            "⬇️ Download Data"
         ])
         
         # ---- Tab 1: Dashboard ----
@@ -982,6 +983,253 @@ def admin_dashboard():
                 
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
+        
+        # ---- Tab 6: Download Data ----
+        with admin_tabs[5]:
+            st.subheader("⬇️ Download All Data")
+            st.write("Export counters, employees, requests, and other data")
+            
+            download_col1, download_col2 = st.columns(2)
+            
+            # ---- Download All Counters ----
+            with download_col1:
+                st.subheader("📦 Download All Counters/Partners")
+                st.write("Export all counter and partner information")
+                
+                try:
+                    partners_df = get_all_partners_df()
+                    emp_df = get_all_employees_df()
+                    
+                    if not partners_df.empty and not emp_df.empty:
+                        # Merge with employee info
+                        merged = partners_df.merge(
+                            emp_df[["emp_id", "emp_name", "region", "sales_force_category", 
+                                   "contact_number", "email", "field_operations_manager",
+                                   "reporting_manager", "regional_manager"]],
+                            on="emp_id",
+                            how="left"
+                        )
+                        
+                        # Reorder columns for better readability
+                        display_order = [
+                            "emp_id", "emp_name", "region", "sales_force_category",
+                            "contact_number", "email", "field_operations_manager",
+                            "reporting_manager", "regional_manager",
+                            "partner_name", "gst_number", "city", "state", "created_date"
+                        ]
+                        display_order = [col for col in display_order if col in merged.columns]
+                        merged_display = merged[display_order].copy()
+                        
+                        st.metric("Total Counters", len(merged_display))
+                        
+                        # Preview
+                        with st.expander("👁️ Preview Data"):
+                            st.dataframe(merged_display.head(10), use_container_width=True, hide_index=True)
+                        
+                        # Download button
+                        excel_bytes = to_excel_bytes({"All Counters": merged_display})
+                        st.download_button(
+                            label="⬇️ Download All Counters (Excel)",
+                            data=excel_bytes,
+                            file_name=f"All_Counters_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            type="primary",
+                            key="download_all_counters"
+                        )
+                        
+                        st.divider()
+                        
+                        # Download by region
+                        st.write("**Download by Region**")
+                        regions = sorted(merged_display["region"].dropna().unique())
+                        for region in regions:
+                            region_data = merged_display[merged_display["region"] == region]
+                            region_bytes = to_excel_bytes({region: region_data})
+                            st.download_button(
+                                label=f"📍 {region} ({len(region_data)} counters)",
+                                data=region_bytes,
+                                file_name=f"Counters_{region}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key=f"download_region_{region}"
+                            )
+                    else:
+                        st.info("No counter data available to download")
+                
+                except Exception as e:
+                    st.error(f"Error loading counter data: {str(e)}")
+            
+            # ---- Download All Employees ----
+            with download_col2:
+                st.subheader("👥 Download All Employees")
+                st.write("Export all employee information")
+                
+                try:
+                    emp_df = get_all_employees_df()
+                    
+                    if not emp_df.empty:
+                        st.metric("Total Employees", len(emp_df))
+                        
+                        # Preview
+                        with st.expander("👁️ Preview Data"):
+                            st.dataframe(emp_df.head(10), use_container_width=True, hide_index=True)
+                        
+                        # Download button
+                        emp_bytes = to_excel_bytes({"Employees": emp_df})
+                        st.download_button(
+                            label="⬇️ Download All Employees (Excel)",
+                            data=emp_bytes,
+                            file_name=f"All_Employees_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            type="primary",
+                            key="download_all_employees"
+                        )
+                        
+                        st.divider()
+                        
+                        # Download by region
+                        st.write("**Download by Region**")
+                        regions = sorted(emp_df["region"].dropna().unique())
+                        for region in regions:
+                            region_emp = emp_df[emp_df["region"] == region]
+                            region_bytes = to_excel_bytes({region: region_emp})
+                            st.download_button(
+                                label=f"📍 {region} ({len(region_emp)} employees)",
+                                data=region_bytes,
+                                file_name=f"Employees_{region}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key=f"download_emp_region_{region}"
+                            )
+                    else:
+                        st.info("No employee data available to download")
+                
+                except Exception as e:
+                    st.error(f"Error loading employee data: {str(e)}")
+            
+            st.divider()
+            
+            # ---- Download Requests Data ----
+            st.subheader("📋 Download Requests Data")
+            
+            req_col1, req_col2, req_col3 = st.columns(3)
+            
+            with req_col1:
+                st.write("**Pending Requests**")
+                try:
+                    pending = fetch_all_rows("partner_requests", eq_filters={"status": "pending"})
+                    if pending:
+                        pending_df = pd.DataFrame(pending)
+                        st.metric("Pending", len(pending_df))
+                        
+                        pending_bytes = to_excel_bytes({"Pending Requests": pending_df})
+                        st.download_button(
+                            label="⬇️ Download Pending",
+                            data=pending_bytes,
+                            file_name=f"Pending_Requests_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="download_pending"
+                        )
+                    else:
+                        st.info("No pending requests")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            
+            with req_col2:
+                st.write("**Approved Requests**")
+                try:
+                    approved = fetch_all_rows("partner_requests", eq_filters={"status": "approved"})
+                    if approved:
+                        approved_df = pd.DataFrame(approved)
+                        st.metric("Approved", len(approved_df))
+                        
+                        approved_bytes = to_excel_bytes({"Approved Requests": approved_df})
+                        st.download_button(
+                            label="⬇️ Download Approved",
+                            data=approved_bytes,
+                            file_name=f"Approved_Requests_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="download_approved"
+                        )
+                    else:
+                        st.info("No approved requests")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            
+            with req_col3:
+                st.write("**Rejected Requests**")
+                try:
+                    rejected = fetch_all_rows("partner_requests", eq_filters={"status": "rejected"})
+                    if rejected:
+                        rejected_df = pd.DataFrame(rejected)
+                        st.metric("Rejected", len(rejected_df))
+                        
+                        rejected_bytes = to_excel_bytes({"Rejected Requests": rejected_df})
+                        st.download_button(
+                            label="⬇️ Download Rejected",
+                            data=rejected_bytes,
+                            file_name=f"Rejected_Requests_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="download_rejected"
+                        )
+                    else:
+                        st.info("No rejected requests")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            
+            st.divider()
+            
+            # ---- Combined Export ----
+            st.subheader("📦 Combined Export (All Data)")
+            st.write("Download all data in a single Excel file with multiple sheets")
+            
+            try:
+                emp_df = get_all_employees_df()
+                partners_df = get_all_partners_df()
+                all_requests = fetch_all_rows("partner_requests")
+                
+                sheets_to_export = {}
+                
+                if not emp_df.empty:
+                    sheets_to_export["Employees"] = emp_df
+                
+                if not partners_df.empty and not emp_df.empty:
+                    merged = partners_df.merge(
+                        emp_df[["emp_id", "emp_name", "region"]],
+                        on="emp_id",
+                        how="left"
+                    )
+                    sheets_to_export["Counters"] = merged
+                
+                if all_requests:
+                    requests_df = pd.DataFrame(all_requests)
+                    sheets_to_export["All Requests"] = requests_df
+                
+                if sheets_to_export:
+                    combined_bytes = to_excel_bytes(sheets_to_export)
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.download_button(
+                            label="📥 Download All Data (Combined Excel)",
+                            data=combined_bytes,
+                            file_name=f"TPS_Complete_Export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            type="primary",
+                            key="download_combined"
+                        )
+                    with col2:
+                        st.info(f"📊 Sheets: {len(sheets_to_export)}")
+                else:
+                    st.info("No data available to export")
+            
+            except Exception as e:
+                st.error(f"Error preparing combined export: {str(e)}")
     
     except Exception as e:
         st.error(f"Error loading Admin dashboard: {str(e)}")
